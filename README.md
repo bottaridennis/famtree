@@ -5,8 +5,12 @@ Albero genealogico interattivo (React + Firebase), pubblicato su GitHub Pages:
 
 ## Funzionalità
 
-- **Albero a generazioni** con layout automatico: coppie affiancate, figli centrati sotto i genitori,
-  ordinamento che riduce gli incroci, legami tra stirpi diverse.
+- **Un albero vero**: i capostipiti stanno sul tronco, i discendenti salgono sui rami. Lo spessore dei
+  rami cresce con il numero di discendenti, la chioma si allarga a ogni generazione; foglie verdi per i
+  viventi e autunnali per chi non c’è più. L’albero “cresce” con un’animazione quando si apre o si
+  aggiungono persone.
+- Layout automatico: coppie affiancate unite da un cuore, figli sopra i genitori, ordinamento che
+  riduce gli incroci.
 - Zoom/pan con mouse, trackpad e touch; pulsanti *ingrandisci / riduci / adatta*.
 - **Scheda persona**: date e luoghi di nascita e morte, età, professione, soprannome, biografia,
   genitori, coniugi, figli, fratelli (cliccabili per navigare).
@@ -19,6 +23,12 @@ Albero genealogico interattivo (React + Firebase), pubblicato su GitHub Pages:
 - **Backup**: esporta/importa JSON, esporta **GEDCOM** (compatibile con MyHeritage, Ancestry, Gramps…).
 - Tema chiaro/scuro, layout responsive (pannello a scomparsa su mobile), scorciatoie da tastiera
   (`/` cerca, `+`/`-` zoom, `0` adatta, `n` nuova persona, `Esc` chiudi), cache offline di Firestore.
+
+## Dati d’esempio
+
+- Da amministratore: menu **⋯ → Carica famiglia d’esempio** (circa 170 persone su 12 generazioni,
+  dal 1690 a oggi, con mestieri d’epoca, vedovanze, emigrazione e storie di famiglia).
+- Oppure **⋯ → Importa backup…** con il file [`demo/famiglia-rossi-12-generazioni.json`](demo/famiglia-rossi-12-generazioni.json).
 
 ## Sviluppo
 

@@ -218,7 +218,7 @@ export function downloadFile(name: string, content: string, type: string) {
 
 // --- Dati dimostrativi ----------------------------------------------------------------------
 
-/** Genera una famiglia d'esempio realistica su 5 generazioni (circa 50 persone). */
+/** Scrive su Firestore la famiglia d'esempio (12 generazioni, dal 1690 a oggi). */
 export async function generateDemo(onProgress?: (n: number) => void): Promise<number> {
   const people = buildDemoPeople(() => doc(collection(db, COLLECTION)).id);
   let done = 0;
@@ -229,52 +229,57 @@ export async function generateDemo(onProgress?: (n: number) => void): Promise<nu
   return people.length;
 }
 
+const DEMO_MALE = ['Giovanni', 'Antonio', 'Giuseppe', 'Francesco', 'Pietro', 'Angelo', 'Luigi', 'Domenico', 'Bortolo', 'Girolamo', 'Battista', 'Valentino', 'Lorenzo', 'Carlo', 'Agostino', 'Sante', 'Eugenio', 'Umberto', 'Vittorio', 'Guido', 'Renato', 'Bruno', 'Sergio', 'Franco', 'Gianni', 'Paolo', 'Marco', 'Stefano', 'Andrea', 'Luca', 'Matteo', 'Davide', 'Alessandro', 'Tommaso', 'Leonardo', 'Edoardo', 'Riccardo', 'Filippo', 'Gabriele', 'Federico'];
+const DEMO_FEMALE = ['Maria', 'Anna', 'Caterina', 'Teresa', 'Lucia', 'Angela', 'Margherita', 'Domenica', 'Elisabetta', 'Giovanna', 'Rosa', 'Antonia', 'Luigia', 'Giuseppina', 'Amalia', 'Elvira', 'Ines', 'Iolanda', 'Gemma', 'Bruna', 'Graziella', 'Luciana', 'Franca', 'Paola', 'Laura', 'Silvia', 'Monica', 'Chiara', 'Elena', 'Francesca', 'Giulia', 'Sara', 'Sofia', 'Aurora', 'Ginevra', 'Matilde', 'Beatrice', 'Alice', 'Emma', 'Vittoria'];
+const DEMO_SURNAMES = ['Bianchi', 'Zanella', 'Bertoldi', 'Furlan', 'Pavan', 'Zanon', 'Benetti', 'Marchesini', 'Tosi', 'Campagnari', 'Righetti', 'Girelli', 'Brunelli', 'Bonomi', 'Vantini', 'Dal Bosco', 'Zamboni', 'Ferrari', 'Bellini', 'Carletti', 'Tomasi', 'Lonardi', 'Scala', 'Perbellini', 'Turrini', 'Gaspari', 'Melotti', 'Cordioli', 'Rigo', 'Fasoli', 'Guarienti', 'Signorini', 'Avesani', 'Bertagnoli', 'Castellani', 'Dalla Riva', 'Fiorini', 'Lugoboni', 'Manzati', 'Olivieri'];
+const DEMO_PLACES_OLD = ['Legnago', 'Cerea', 'Isola della Scala', 'Bovolone', 'Nogara', 'Sanguinetto', 'Zevio', 'Villafranca', 'Soave', 'Ronco all’Adige'];
+const DEMO_PLACES_NEW = ['Verona', 'Legnago', 'Padova', 'Vicenza', 'Milano', 'Bologna', 'Trento', 'Venezia', 'Mantova', 'Torino'];
+
+/** Mestieri per epoca: [maschile, femminile]. */
+const DEMO_JOBS: { until: number; jobs: [string, string][] }[] = [
+  { until: 1800, jobs: [['Contadino', 'Contadina'], ['Mezzadro', 'Filatrice'], ['Fabbro', 'Lavandaia'], ['Mugnaio', 'Tessitrice'], ['Bottaio', 'Levatrice'], ['Carrettiere', 'Sarta']] },
+  { until: 1880, jobs: [['Contadino', 'Contadina'], ['Calzolaio', 'Sarta'], ['Falegname', 'Filandaia'], ['Oste', 'Ostessa'], ['Muratore', 'Merlettaia'], ['Sellaio', 'Bracciante']] },
+  { until: 1940, jobs: [['Operaio', 'Operaia'], ['Ferroviere', 'Maestra elementare'], ['Fornaio', 'Sarta'], ['Meccanico', 'Mondina'], ['Carabiniere', 'Infermiera'], ['Falegname', 'Casalinga']] },
+  { until: 1995, jobs: [['Ingegnere', 'Insegnante'], ['Ragioniere', 'Infermiera'], ['Medico', 'Farmacista'], ['Elettricista', 'Commessa'], ['Architetto', 'Avvocata'], ['Agronomo', 'Impiegata']] },
+  { until: 2003, jobs: [['Sviluppatore software', 'Designer'], ['Ricercatore', 'Biologa'], ['Chef', 'Fisioterapista'], ['Data analyst', 'Architetta']] },
+  { until: 9999, jobs: [['Studente', 'Studentessa']] },
+];
+
+/**
+ * Costruisce una famiglia d'esempio realistica su 12 generazioni (circa 170 persone):
+ * rami che si estinguono, mortalità infantile d'epoca, un vedovo risposato, un emigrante.
+ */
 export function buildDemoPeople(newId: () => string): Person[] {
-  let seed = 7;
+  let seed = 20240;
   const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+  const int = (a: number, b: number) => a + Math.floor(rand() * (b - a + 1));
   const pick = <T,>(arr: T[]) => arr[Math.floor(rand() * arr.length)];
-  const usedNames = new Set<string>();
-  const pickName = (list: string[]) => {
-    const free = list.filter((n) => !usedNames.has(n));
-    const name = pick(free.length ? free : list);
-    usedNames.add(name);
-    return name;
-  };
-
-  const male = ['Giovanni', 'Luca', 'Marco', 'Matteo', 'Alessandro', 'Francesco', 'Lorenzo', 'Riccardo', 'Gabriele', 'Leonardo', 'Tommaso', 'Edoardo', 'Federico', 'Pietro', 'Filippo', 'Davide', 'Andrea', 'Antonio', 'Giuseppe', 'Stefano', 'Paolo', 'Enrico'];
-  const female = ['Maria', 'Elena', 'Giulia', 'Sofia', 'Beatrice', 'Chiara', 'Alice', 'Emma', 'Vittoria', 'Sara', 'Martina', 'Giorgia', 'Anna', 'Francesca', 'Elisa', 'Aurora', 'Ginevra', 'Greta', 'Matilde', 'Bianca', 'Adele', 'Irene'];
-  const surnames = ['Bianchi', 'Verdi', 'Romano', 'Gallo', 'Costa', 'Fontana', 'Ricci', 'Bruno', 'Conti', 'Marino', 'Greco', 'Lombardi'];
-  const places = ['Verona', 'Padova', 'Vicenza', 'Mantova', 'Brescia', 'Trento', 'Venezia', 'Bologna', 'Milano', 'Legnago'];
-  // [maschile, femminile]
-  const jobs: Record<number, [string, string][]> = {
-    0: [['Agricoltore', 'Agricoltrice'], ['Fabbro', 'Sarta'], ['Maestro elementare', 'Maestra elementare'], ['Mugnaio', 'Ricamatrice'], ['Commerciante', 'Commerciante']],
-    1: [['Operaio', 'Operaia'], ['Insegnante', 'Insegnante'], ['Infermiere', 'Infermiera'], ['Ragioniere', 'Ragioniera'], ['Meccanico', 'Impiegata comunale']],
-    2: [['Ingegnere', 'Ingegnera'], ['Medico', 'Medica'], ['Architetto', 'Architetta'], ['Sviluppatore software', 'Sviluppatrice software'], ['Avvocato', 'Avvocata'], ['Grafico', 'Grafica']],
-    3: [['Studente', 'Studentessa']],
-  };
-
+  const NOW = 2025;
   const people: Person[] = [];
-  const date = (year: number) =>
-    `${year}-${String(1 + Math.floor(rand() * 12)).padStart(2, '0')}-${String(1 + Math.floor(rand() * 28)).padStart(2, '0')}`;
 
-  const make = (gender: Gender, lastName: string, year: number, generation: number, father?: Person, mother?: Person) => {
+  const date = (year: number) => `${year}-${String(int(1, 12)).padStart(2, '0')}-${String(int(1, 28)).padStart(2, '0')}`;
+  const job = (gender: Gender, year: number) => pick(DEMO_JOBS.find((j) => year < j.until)!.jobs)[gender === 'female' ? 1 : 0];
+  const place = (year: number) => pick(year < 1930 ? DEMO_PLACES_OLD : DEMO_PLACES_NEW);
+
+  const make = (opts: { gender: Gender; firstName: string; lastName: string; year: number; father?: Person; mother?: Person; dieYoung?: boolean }) => {
+    const { gender, firstName, lastName, year, father, mother } = opts;
     const p: Person = {
       id: newId(),
-      firstName: pickName(gender === 'male' ? male : female),
+      firstName,
       lastName,
       gender,
       birthDate: date(year),
-      birthPlace: pick(places),
-      occupation: pick(jobs[generation])[gender === 'female' ? 1 : 0],
+      birthPlace: father ? father.birthPlace && rand() < 0.6 ? father.birthPlace : place(year) : place(year),
       spouseIds: [],
     };
     if (father) p.fatherId = father.id;
     if (mother) p.motherId = mother.id;
-    const deathAge = 68 + Math.floor(rand() * 25);
-    if (year + deathAge < 2024 && generation < 2) {
-      p.deathDate = date(year + deathAge);
-      p.deathPlace = pick(places);
+    const lifespanYears = opts.dieYoung ? int(0, 9) : year < 1850 ? int(42, 84) : year < 1930 ? int(58, 92) : int(70, 98);
+    if (year + lifespanYears < NOW) {
+      p.deathDate = date(year + lifespanYears);
+      p.deathPlace = rand() < 0.75 ? p.birthPlace : place(year + lifespanYears);
     }
+    if (!opts.dieYoung && year + 16 < NOW) p.occupation = job(gender, year);
     people.push(p);
     return p;
   };
@@ -282,53 +287,113 @@ export function buildDemoPeople(newId: () => string): Person[] {
     a.spouseIds!.push(b.id);
     b.spouseIds!.push(a.id);
   };
-  const coupleFor = (blood: Person, year: number, generation: number) => {
-    const spouse = make(blood.gender === 'male' ? 'female' : 'male', pick(surnames), year + Math.round(rand() * 6 - 3), generation);
-    marry(blood, spouse);
-    return blood.gender === 'male' ? [blood, spouse] : [spouse, blood];
+  const year = (p: Person) => parseInt(p.birthDate!.slice(0, 4), 10);
+  const spouseFor = (blood: Person) => {
+    const gender: Gender = blood.gender === 'male' ? 'female' : 'male';
+    const s = make({
+      gender,
+      firstName: pick(gender === 'male' ? DEMO_MALE : DEMO_FEMALE),
+      lastName: pick(DEMO_SURNAMES),
+      year: year(blood) + int(-4, 3) + (gender === 'male' ? 2 : -1),
+    });
+    marry(blood, s);
+    return s;
   };
 
-  const greatGrandpa = make('male', 'Rossi', 1890, 0);
-  const greatGrandma = make('female', 'Ferrari', 1894, 0);
-  marry(greatGrandpa, greatGrandma);
-  greatGrandpa.bio = 'Capostipite della famiglia: mezzadro nella bassa veronese, combatté sul Piave nel 1917.';
-  const founder = make('male', 'Rossi', 1922, 0, greatGrandpa, greatGrandma);
-  founder.bio = 'Lasciò la campagna veronese per aprire una bottega di falegnameria.';
-  const founderWife = make('female', 'Bianchi', 1926, 0);
-  founderWife.bio = 'Ricamatrice instancabile, custode delle ricette e delle storie di famiglia.';
+  interface Couple {
+    father: Person;
+    mother: Person;
+  }
+  const famiglia = (father: Person, mother: Person): Couple => ({ father, mother });
+
+  // Capostipiti
+  const founder = make({ gender: 'male', firstName: 'Bortolo', lastName: 'Rossi', year: 1690 });
+  founder.birthPlace = 'Legnago';
+  founder.bio = 'Capostipite della famiglia: mezzadro sulle terre dei conti Pompei, lungo l’Adige. Il suo nome compare nel registro dei battesimi di Legnago del 1690.';
+  const founderWife = make({ gender: 'female', firstName: 'Domenica', lastName: 'Zanella', year: 1694 });
   marry(founder, founderWife);
 
-  // Genitori di un coniuge acquisito: mostra l'incrocio di due stirpi.
-  const otherFather = make('male', 'Conti', 1925, 0);
-  const otherMother = make('female', 'Marino', 1929, 0);
-  marry(otherFather, otherMother);
+  const GENERATIONS = 12;
+  // Quante coppie portano avanti la discendenza a ogni generazione (la chioma si allarga e poi si stabilizza).
+  const CAP = [1, 2, 3, 3, 4, 4, 4, 4, 4, 4, 3, 0];
+  let couples: Couple[] = [famiglia(founder, founderWife)];
 
-  for (let i = 0; i < 4; i++) {
-    const year = 1948 + i * 4;
-    const child = make(i % 2 === 0 ? 'male' : 'female', 'Rossi', year, 1, founder, founderWife);
-    let father: Person, mother: Person;
-    if (i === 1) {
-      const husband = make('male', 'Conti', year - 2, 1, otherFather, otherMother);
-      marry(child, husband);
-      [father, mother] = [husband, child];
-    } else {
-      [father, mother] = coupleFor(child, year, 1);
+  for (let g = 0; g < GENERATIONS - 1; g++) {
+    const next: Couple[] = [];
+    const candidates: { child: Person; family: number }[] = [];
+
+    couples.forEach((c, fi) => {
+      const base = Math.max(year(c.father), year(c.mother));
+      const old = base < 1900;
+      let kids = old ? int(3, 5) : base < 1960 ? int(2, 3) : int(1, 3);
+      let mother = c.mother;
+      let y = base + int(22, 28);
+      const used = new Set<string>();
+      for (let k = 0; k < kids; k++) {
+        // Vedovanza e seconde nozze, una volta nella storia della famiglia.
+        if (g === 4 && fi === 0 && k === 2 && mother === c.mother) {
+          mother.deathDate = date(y);
+          mother.deathPlace = mother.birthPlace;
+          mother.bio = 'Morì giovane di febbre puerperale; il marito si risposò l’anno seguente.';
+          const second = make({ gender: 'female', firstName: pick(DEMO_FEMALE), lastName: pick(DEMO_SURNAMES), year: base + int(4, 8) });
+          marry(c.father, second);
+          mother = second;
+          y += 2;
+          kids += 1;
+        }
+        const gender: Gender = rand() < 0.5 ? 'male' : 'female';
+        const names = (gender === 'male' ? DEMO_MALE : DEMO_FEMALE).filter((n) => !used.has(n));
+        // I primi figli spesso portano il nome dei nonni.
+        const grand = gender === 'male' ? people.find((p) => p.id === c.father.fatherId) : people.find((p) => p.id === c.mother.motherId);
+        const firstName = k < 2 && grand && !used.has(grand.firstName) && rand() < 0.6 ? grand.firstName : pick(names);
+        used.add(firstName);
+        const dieYoung = old && rand() < 0.18;
+        const child = make({ gender, firstName, lastName: c.father.lastName, year: y, father: c.father, mother, dieYoung });
+        if (!dieYoung && year(child) + 20 < NOW) candidates.push({ child, family: fi });
+        y += int(2, 4);
+      }
+    });
+
+    // Sceglie chi prosegue la discendenza: almeno un figlio per famiglia finché c'è posto.
+    const chosen: Person[] = [];
+    const byFamily = new Map<number, Person[]>();
+    candidates.forEach(({ child, family }) => byFamily.set(family, [...(byFamily.get(family) ?? []), child]));
+    const shuffle = <T,>(list: T[]) => {
+      const a = [...list];
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    };
+    const pools = [...byFamily.values()].map(shuffle);
+    while (chosen.length < CAP[g + 1] && pools.some((l) => l.length)) {
+      for (const pool of pools) {
+        if (chosen.length >= CAP[g + 1]) break;
+        const c = pool.shift();
+        if (c) chosen.push(c);
+      }
     }
-    const kids = 2 + Math.floor(rand() * 2);
-    for (let j = 0; j < kids; j++) {
-      const y3 = 1975 + i * 3 + j * 3;
-      const g3 = make(rand() > 0.5 ? 'male' : 'female', father.lastName, y3, 2, father, mother);
-      if (rand() > 0.75) continue;
-      const [f3, m3] = coupleFor(g3, y3, 2);
-      const grandkids = 1 + Math.floor(rand() * 2);
-      for (let k = 0; k < grandkids; k++) make(rand() > 0.5 ? 'male' : 'female', f3.lastName, 2008 + j * 2 + k * 3, 3, f3, m3);
-    }
+    candidates.forEach(({ child }) => {
+      if (chosen.includes(child)) {
+        const spouse = spouseFor(child);
+        next.push(child.gender === 'male' ? famiglia(child, spouse) : famiglia(spouse, child));
+      } else if (rand() < 0.3 && year(child) < 2000) {
+        spouseFor(child); // sposato/a, senza figli
+      }
+    });
+    couples = next;
   }
-  // Fratello del capostipite, defunto senza data nota.
-  const brother = make('male', 'Rossi', 1919, 0, greatGrandpa, greatGrandma);
-  brother.deceased = true;
-  delete brother.deathDate;
-  delete brother.deathPlace;
-  brother.bio = 'Emigrato in Argentina nel 1947: le sue tracce si perdono a Buenos Aires.';
+
+  // Qualche storia di famiglia.
+  const story = (filter: (p: Person) => boolean, bio: string) => {
+    const p = people.find((x) => filter(x) && !x.bio);
+    if (p) p.bio = bio;
+  };
+  story((p) => p.gender === 'male' && year(p) > 1860 && year(p) < 1885 && p.lastName === 'Rossi', 'Nel 1888 partì da Genova per Buenos Aires con il fratello minore. Scrisse a casa per trent’anni; le sue lettere sono conservate in soffitta.');
+  story((p) => p.gender === 'male' && year(p) >= 1890 && year(p) < 1900, 'Classe del ’99: combatté sul Piave e tornò a casa con una medaglia al valore che non mostrava mai a nessuno.');
+  story((p) => p.gender === 'female' && year(p) >= 1915 && year(p) < 1930, 'Mondina in Lomellina da ragazza, poi sarta in paese. Cuciva gli abiti da sposa di mezza provincia.');
+  story((p) => p.gender === 'male' && year(p) >= 1945 && year(p) < 1960, 'Primo della famiglia a laurearsi: ingegnere idraulico, progettò gli argini nuovi dell’Adige.');
+  story((p) => year(p) >= 2010, 'L’ultima foglia dell’albero: ha disegnato la prima versione di questo archivio di famiglia per un compito di scuola.');
   return people;
 }

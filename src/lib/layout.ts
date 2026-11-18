@@ -1,63 +1,47 @@
 import type { Person } from '../types';
 
 /**
- * Layout ad albero vero: gli antenati stanno in basso sul tronco, i discendenti salgono sui rami.
+ * Layout genealogico a generazioni.
  *
- * 1. Assegna una generazione a ogni persona (figli sopra i genitori, coniugi sulla stessa riga,
- *    genitori "aggiunti dopo" portati vicino ai figli).
+ * 1. Assegna una generazione a ogni persona (figli sotto i genitori, coniugi sulla stessa riga,
+ *    genitori "aggiunti dopo" tirati giù vicino ai figli).
  * 2. Raggruppa le coppie in "unità" affiancate.
- * 3. Ordina le unità di ogni generazione con sweep baricentrici per ridurre gli incroci.
+ * 3. Ordina le unità di ogni generazione con sweep baricentrici (alto→basso e basso→alto) per
+ *    ridurre gli incroci.
  * 4. Calcola le coordinate con una regressione isotonica (PAV): ogni unità si avvicina il più
- *    possibile alla posizione ideale (sopra i genitori / sotto i figli) senza sovrapporsi.
- * 5. Disegna i rami come curve organiche che partono dal punto d'unione della coppia: lo spessore
- *    cresce con il numero di discendenti, così il tronco è più grosso e le punte sottili.
+ *    possibile alla posizione ideale (sotto i genitori / sopra i figli) senza sovrapporsi.
  */
 
-/** Ingombro di una persona: medaglione in alto, cartellino col nome sotto. */
-export const NODE_W = 150;
-export const NODE_H = 116;
-export const MED_R = 30;
-export const MED_CY = 36;
-export const LABEL_W = 140;
-export const LABEL_Y = 74;
-export const LABEL_H = 40;
-
-const SPOUSE_GAP = 34;
-const UNIT_GAP = 46;
-const GEN_GAP = 150;
+export const NODE_W = 232;
+export const NODE_H = 84;
+const SPOUSE_GAP = 36;
+const UNIT_GAP = 44;
+const GEN_GAP = 120;
 const ROW_H = NODE_H + GEN_GAP;
-const GROUND_GAP = 230;
 
 export interface LayoutNode {
   person: Person;
   x: number;
   y: number;
   gen: number;
-  /** Numero di discendenti (per lo spessore dei rami e la chioma). */
-  descendants: number;
 }
 
-export interface Branch {
+export interface LayoutLink {
   key: string;
-  kind: 'child' | 'spouse' | 'trunk' | 'root';
+  type: 'child' | 'spouse';
   d: string;
-  width: number;
   /** Persone coinvolte (per evidenziare la discendenza). */
   ids: string[];
-  /** Generazione di arrivo, per l'animazione di crescita dal basso. */
-  gen: number;
-  /** Ramo tratteggiato: legame tra persone non affiancate. */
+  /** Per i legami di coppia: punto medio dove disegnare il simbolo. */
+  mid?: { x: number; y: number };
+  /** Legame tra persone non adiacenti o su generazioni diverse. */
   loose?: boolean;
 }
 
 export interface TreeLayout {
   nodes: LayoutNode[];
   nodeById: Map<string, LayoutNode>;
-  branches: Branch[];
-  /** Punti d'unione delle coppie (dove disegnare il cuore). */
-  hearts: { key: string; x: number; y: number; ids: string[] }[];
-  ground: { y: number; x1: number; x2: number } | null;
-  minX: number;
+  links: LayoutLink[];
   width: number;
   height: number;
   generations: number;
@@ -70,8 +54,6 @@ interface Unit {
   x: number;
   w: number;
 }
-
-export const branchWidth = (descendants: number) => Math.min(60, 3.5 + 4.4 * Math.sqrt(descendants));
 
 const unitWidth = (n: number) => n * NODE_W + (n - 1) * SPOUSE_GAP;
 const memberOffset = (i: number) => i * (NODE_W + SPOUSE_GAP);
@@ -294,62 +276,26 @@ export function computeLayout(people: Person[]): TreeLayout {
     for (let g = 0; g <= maxGen; g++) place(rows[g], rows[g].map(desiredFromParents));
   }
 
-  // --- 5. Nodi (asse Y invertito: generazione 0 in basso) ----------------------------------
+  // --- 5. Nodi -----------------------------------------------------------------------------
   const minX = Math.min(0, ...units.map((u) => u.x));
   units.forEach((u) => (u.x -= minX));
-  const descCount = new Map<string, number>();
-  const countDesc = (id: string): Set<string> => {
-    const out = new Set<string>();
-    const stack = [...(children.get(id) ?? [])];
-    while (stack.length) {
-      const c = stack.pop()!;
-      if (out.has(c) || c === id) continue;
-      out.add(c);
-      stack.push(...(children.get(c) ?? []));
-    }
-    return out;
-  };
-  people.forEach((p) => descCount.set(p.id, countDesc(p.id).size));
-
-  const rowY = (g: number) => (maxGen - g) * ROW_H;
   const nodes: LayoutNode[] = [];
   units.forEach((u) =>
     u.members.forEach((m, i) =>
-      nodes.push({
-        person: idx.get(m)!,
-        x: u.x + memberOffset(i),
-        y: rowY(u.gen),
-        gen: u.gen,
-        descendants: descCount.get(m) ?? 0,
-      }),
+      nodes.push({ person: idx.get(m)!, x: u.x + memberOffset(i), y: u.gen * ROW_H, gen: u.gen }),
     ),
   );
   const nodeById = new Map(nodes.map((n) => [n.person.id, n]));
 
-  // --- 6. Rami ---------------------------------------------------------------------------
-  const branches: Branch[] = [];
-  const hearts: TreeLayout['hearts'] = [];
+  // --- 6. Collegamenti ---------------------------------------------------------------------
+  const links: LayoutLink[] = [];
+  const cy = (n: LayoutNode) => n.y + NODE_H / 2;
   const cx = (n: LayoutNode) => n.x + NODE_W / 2;
-  const labelMid = (n: LayoutNode) => n.y + LABEL_Y + LABEL_H / 2;
-  const bottom = (n: LayoutNode) => ({ x: cx(n), y: n.y + NODE_H - 2 });
-  const medTop = (n: LayoutNode) => ({ x: cx(n), y: n.y + MED_CY - MED_R + 4 });
-  const fmt = (v: number) => Math.round(v * 10) / 10;
 
-  /** Curva a "S" morbida, come un ramo che sale. */
-  const sCurve = (s: { x: number; y: number }, e: { x: number; y: number }) => {
-    const dy = s.y - e.y;
-    const dx = e.x - s.x;
-    // Parte verso l'alto inclinandosi, poi si raddrizza sotto la persona: come un ramo vero.
-    return `M ${fmt(s.x)} ${fmt(s.y)} C ${fmt(s.x + dx * 0.25)} ${fmt(s.y - dy * 0.5)}, ${fmt(e.x - dx * 0.08)} ${fmt(e.y + dy * 0.5)}, ${fmt(e.x)} ${fmt(e.y)}`;
-  };
-
-  // Coppie affiancate: ramoscello che le unisce e punto d'unione da cui partono i figli.
-  const junction = new Map<string, { x: number; y: number }>();
-  const pairKey = (a: string, b: string) => [a, b].sort().join('|');
   const seenPairs = new Set<string>();
   spouses.forEach((set, a) =>
     set.forEach((b) => {
-      const key = pairKey(a, b);
+      const key = [a, b].sort().join('|');
       if (seenPairs.has(key)) return;
       seenPairs.add(key);
       const na = nodeById.get(a)!;
@@ -358,111 +304,114 @@ export function computeLayout(people: Person[]): TreeLayout {
       const ua = unitOf.get(a)!;
       const adjacent = ua === unitOf.get(b) && Math.abs(ua.members.indexOf(a) - ua.members.indexOf(b)) === 1;
       if (adjacent) {
-        const y = labelMid(l);
-        const x1 = l.x + (NODE_W + LABEL_W) / 2 - 2;
-        const x2 = r.x + (NODE_W - LABEL_W) / 2 + 2;
-        const mid = { x: (x1 + x2) / 2, y };
-        junction.set(key, mid);
-        branches.push({
+        const y = cy(l);
+        links.push({
           key: `s-${key}`,
-          kind: 'spouse',
-          d: `M ${fmt(x1)} ${fmt(y)} Q ${fmt(mid.x)} ${fmt(y + 10)} ${fmt(x2)} ${fmt(y)}`,
-          width: 4,
+          type: 'spouse',
+          d: `M ${l.x + NODE_W} ${y} H ${r.x}`,
           ids: [a, b],
-          gen: l.gen,
+          mid: { x: (l.x + NODE_W + r.x) / 2, y },
         });
-        hearts.push({ key, x: mid.x, y: mid.y + 5, ids: [a, b] });
       } else {
-        // Coniugi non affiancati (es. secondo matrimonio lontano): arco tratteggiato.
-        const s = medTop(l);
-        const e = medTop(r);
-        const lift = 50 + Math.min(90, Math.abs(e.x - s.x) * 0.08);
-        const top = Math.min(s.y, e.y) - lift;
-        branches.push({
+        const y = Math.min(l.y, r.y);
+        const lift = 36 + Math.min(80, Math.abs(cx(r) - cx(l)) * 0.08);
+        links.push({
           key: `s-${key}`,
-          kind: 'spouse',
-          d: `M ${fmt(s.x)} ${fmt(s.y)} C ${fmt(s.x)} ${fmt(top)}, ${fmt(e.x)} ${fmt(top)}, ${fmt(e.x)} ${fmt(e.y)}`,
-          width: 2,
+          type: 'spouse',
+          d: `M ${cx(l)} ${l.y} C ${cx(l)} ${y - lift}, ${cx(r)} ${y - lift}, ${cx(r)} ${r.y}`,
           ids: [a, b],
-          gen: Math.max(l.gen, r.gen),
+          mid: { x: (cx(l) + cx(r)) / 2, y: y - lift * 0.75 },
           loose: true,
         });
-        hearts.push({ key, x: (s.x + e.x) / 2, y: top + lift * 0.25, ids: [a, b] });
       }
     }),
   );
 
-  // Rami genitori → figli.
+  // Collegamenti genitori → figli. Ogni famiglia (stessa coppia di genitori) ha la sua "corsia"
+  // orizzontale nello spazio tra le generazioni: famiglie vicine non condividono mai lo stesso
+  // tratto orizzontale, quindi le linee non si sovrappongono.
+  interface Family {
+    key: string;
+    ps: string[];
+    sx: number;
+    sy: number;
+    rowTop: number;
+    kids: LayoutNode[];
+    x1: number;
+    x2: number;
+    lane: number;
+  }
+  const families = new Map<string, Family>();
   people.forEach((c) => {
     const ps = parents.get(c.id)!;
     if (!ps.length) return;
     const nc = nodeById.get(c.id)!;
-    const pn = ps.map((pid) => nodeById.get(pid)!);
-    let start: { x: number; y: number };
-    if (pn.length === 2 && junction.has(pairKey(ps[0], ps[1]))) start = junction.get(pairKey(ps[0], ps[1]))!;
-    else if (pn.length === 2) start = { x: (cx(pn[0]) + cx(pn[1])) / 2, y: Math.min(pn[0].y, pn[1].y) + MED_CY - MED_R };
-    else start = medTop(pn[0]);
-    const end = bottom(nc);
-    branches.push({
-      key: `c-${c.id}`,
-      kind: 'child',
-      d: end.y < start.y ? sCurve(start, end) : `M ${fmt(start.x)} ${fmt(start.y)} L ${fmt(end.x)} ${fmt(end.y)}`,
-      width: branchWidth(nc.descendants),
-      ids: [...ps, c.id],
-      gen: nc.gen,
+    const key = `${[...ps].sort().join('+')}@${nc.y}`;
+    let fam = families.get(key);
+    if (!fam) {
+      const pn = ps.map((pid) => nodeById.get(pid)!);
+      let sx: number;
+      let sy: number;
+      if (pn.length === 2) {
+        const [a, b] = pn;
+        const coupled = spouses.get(ps[0])?.has(ps[1]) && a.y === b.y;
+        sx = (cx(a) + cx(b)) / 2;
+        sy = coupled && Math.abs(cx(a) - cx(b)) <= NODE_W + SPOUSE_GAP + 1 ? cy(a) : Math.max(a.y, b.y) + NODE_H;
+      } else {
+        sx = cx(pn[0]);
+        sy = pn[0].y + NODE_H;
+      }
+      fam = { key, ps, sx, sy, rowTop: nc.y, kids: [], x1: sx, x2: sx, lane: 0 };
+      families.set(key, fam);
+    }
+    fam.kids.push(nc);
+    fam.x1 = Math.min(fam.x1, cx(nc));
+    fam.x2 = Math.max(fam.x2, cx(nc));
+  });
+
+  // Assegnazione delle corsie per ogni fascia tra due generazioni (interval scheduling).
+  const LANE_MARGIN = 14;
+  const byRow = new Map<number, Family[]>();
+  families.forEach((f) => byRow.set(f.rowTop, [...(byRow.get(f.rowTop) ?? []), f]));
+  const laneCount = new Map<number, number>();
+  byRow.forEach((list, rowTop) => {
+    const ends: number[] = [];
+    [...list]
+      .sort((a, b) => a.x1 - b.x1 || a.x2 - b.x2)
+      .forEach((f) => {
+        if (f.x2 - f.x1 < 1) return; // solo tratto verticale: nessuna corsia necessaria
+        let lane = ends.findIndex((end) => end + LANE_MARGIN < f.x1);
+        if (lane === -1) {
+          lane = ends.length;
+          ends.push(f.x2);
+        } else ends[lane] = f.x2;
+        f.lane = lane;
+      });
+    laneCount.set(rowTop, Math.max(1, ends.length));
+  });
+
+  families.forEach((f) => {
+    const lanes = laneCount.get(f.rowTop)!;
+    const step = Math.min(22, GEN_GAP / (lanes + 1));
+    // Corsie centrate nella fascia tra le generazioni.
+    const busY = f.rowTop - GEN_GAP / 2 + (f.lane - (lanes - 1) / 2) * step;
+    const { sx, sy } = f;
+    f.kids.forEach((nc) => {
+      const ex = cx(nc);
+      const r = Math.min(10, Math.abs(ex - sx) / 2, Math.abs(busY - sy) / 2, Math.abs(nc.y - busY) / 2);
+      let d: string;
+      if (Math.abs(ex - sx) < 1) d = `M ${sx} ${sy} V ${nc.y}`;
+      else {
+        const dir = ex > sx ? 1 : -1;
+        d =
+          `M ${sx} ${sy} V ${busY - r} Q ${sx} ${busY} ${sx + dir * r} ${busY} ` +
+          `H ${ex - dir * r} Q ${ex} ${busY} ${ex} ${busY + r} V ${nc.y}`;
+      }
+      links.push({ key: `c-${nc.person.id}`, type: 'child', d, ids: [...f.ps, nc.person.id] });
     });
   });
 
-  // Tronco e radici sotto i capostipiti della generazione 0.
-  let ground: TreeLayout['ground'] = null;
-  if (nodes.length) {
-    const groundY = rowY(0) + NODE_H + GROUND_GAP;
-    const xs = nodes.map((n) => n.x);
-    ground = { y: groundY, x1: Math.min(...xs) - 160, x2: Math.max(...xs) + NODE_W + 160 };
-    rows[0].forEach((u) => {
-      if (u.members.some((m) => parents.get(m)!.length)) return;
-      const total = new Set(u.members.flatMap((m) => [...countDesc(m)])).size;
-      const ms = u.members.map((m) => nodeById.get(m)!);
-      const key = u.members.length === 2 ? pairKey(u.members[0], u.members[1]) : '';
-      const top = junction.get(key) ?? bottom(ms[0]);
-      const w = total ? 14 + 6.5 * Math.sqrt(total) : branchWidth(0);
-      branches.push({
-        key: `t-${u.id}`,
-        kind: 'trunk',
-        d: `M ${fmt(top.x)} ${fmt(top.y - 10)} C ${fmt(top.x + 8)} ${fmt(top.y + 70)}, ${fmt(top.x - 12)} ${fmt(groundY - 90)}, ${fmt(top.x)} ${fmt(groundY + 4)}`,
-        width: w,
-        ids: u.members,
-        gen: -1,
-      });
-      if (!total) return;
-      // Radici che affiorano dal terreno.
-      [-1, 1].forEach((dir) =>
-        [0.55, 1].forEach((f, i) => {
-          const len = (50 + w * 2.6) * f;
-          branches.push({
-            key: `r-${u.id}-${dir}-${i}`,
-            kind: 'root',
-            d: `M ${fmt(top.x)} ${fmt(groundY - 6)} Q ${fmt(top.x + dir * len * 0.4)} ${fmt(groundY + 2)} ${fmt(top.x + dir * len)} ${fmt(groundY + 10 + i * 10)}`,
-            width: Math.max(3, w * (i ? 0.32 : 0.5)),
-            ids: u.members,
-            gen: -1,
-          });
-        }),
-      );
-    });
-  }
-
   const width = nodes.length ? Math.max(...nodes.map((n) => n.x + NODE_W)) : 0;
-  const height = ground ? ground.y + 40 : 0;
-  return {
-    nodes,
-    nodeById,
-    branches,
-    hearts,
-    ground,
-    minX: 0,
-    width,
-    height,
-    generations: people.length ? maxGen + 1 : 0,
-  };
+  const height = nodes.length ? (maxGen + 1) * ROW_H - GEN_GAP : 0;
+  return { nodes, nodeById, links, width, height, generations: people.length ? maxGen + 1 : 0 };
 }

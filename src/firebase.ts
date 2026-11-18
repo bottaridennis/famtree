@@ -1,95 +1,46 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, getDoc, getDocs, addDoc, updateDoc, deleteDoc, onSnapshot, query, where, getDocFromServer, writeBatch } from 'firebase/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
+import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
+import type { FirebaseOptions } from 'firebase/app';
 
-const app = initializeApp(firebaseConfig);
+// Iniettata da vite.config.ts (file locale o secret FIREBASE_CONFIG).
+declare const __FIREBASE_CONFIG__: FirebaseOptions & { firestoreDatabaseId?: string };
+const config = __FIREBASE_CONFIG__;
 
-// Initialize Firestore based on config
-export const db = (firebaseConfig as any).firestoreDatabaseId && (firebaseConfig as any).firestoreDatabaseId !== '(default)'
-  ? getFirestore(app, (firebaseConfig as any).firestoreDatabaseId)
-  : getFirestore(app);
+export const app = initializeApp(config);
+
+const settings = (() => {
+  try {
+    // Cache offline: l'albero resta consultabile anche senza connessione.
+    return { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) };
+  } catch {
+    return {};
+  }
+})();
+
+export const db =
+  config.firestoreDatabaseId && config.firestoreDatabaseId !== '(default)'
+    ? initializeFirestore(app, settings, config.firestoreDatabaseId)
+    : initializeFirestore(app, settings);
 
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-export {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  onSnapshot,
-  query,
-  where,
-  getDocFromServer,
-  writeBatch,
-  signInWithPopup,
-  signOut,
-  onAuthStateChanged
-};
-
-export enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
+/** Traduce gli errori Firebase in messaggi comprensibili. */
+export function describeFirebaseError(err: unknown): string {
+  const code = (err as { code?: string })?.code ?? '';
+  const map: Record<string, string> = {
+    'permission-denied': 'Permesso negato: solo l’amministratore verificato può modificare l’archivio.',
+    'unavailable': 'Servizio non raggiungibile. Controlla la connessione e riprova.',
+    'auth/popup-closed-by-user': 'Accesso annullato.',
+    'auth/cancelled-popup-request': 'Accesso annullato.',
+    'auth/popup-blocked': 'Il browser ha bloccato la finestra di accesso. Consenti i popup per questo sito.',
+    'auth/unauthorized-domain':
+      'Questo dominio non è autorizzato in Firebase Authentication. Aggiungilo in Console → Authentication → Settings → Authorized domains.',
+    'auth/network-request-failed': 'Errore di rete durante l’accesso.',
+  };
+  if (map[code]) return map[code];
+  if (err instanceof Error) return err.message;
+  return String(err);
 }
-
-export interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId: string | undefined;
-    email: string | null | undefined;
-    emailVerified: boolean | undefined;
-    isAnonymous: boolean | undefined;
-    tenantId: string | null | undefined;
-    providerInfo: {
-      providerId: string;
-      displayName: string | null;
-      email: string | null;
-      photoUrl: string | null;
-    }[];
-  }
-}
-
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
-    operationType,
-    path
-  }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
-
-export async function testConnection() {
-  try {
-    // We use a simple getDoc without forcing server to allow for initial caching
-    await getDoc(doc(db, 'test', 'connection'));
-    console.log("Firestore initialized.");
-  } catch (error) {
-    // We only log to console for debugging, without throwing or showing scary errors to the user
-    console.debug("Firestore connection warmup:", error);
-  }
-}
-testConnection();

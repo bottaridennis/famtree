@@ -1,278 +1,322 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { Person } from '../types';
-import { User, Heart, Baby } from 'lucide-react';
+import type { Gender } from '../types';
+import { NODE_H, NODE_W, type LayoutNode, type TreeLayout } from '../lib/layout';
+import { initials, isDeceased, lifespan } from '../lib/family';
 
-interface FamilyTreeProps {
-  people: Person[];
-  onSelectPerson?: (person: Person) => void;
+export interface FamilyTreeHandle {
+  zoomIn: () => void;
+  zoomOut: () => void;
+  fit: () => void;
+  centerOn: (id: string, opts?: { zoom?: boolean; yRatio?: number }) => void;
 }
 
-const FamilyTree: React.FC<FamilyTreeProps> = ({ people, onSelectPerson }) => {
+interface Props {
+  layout: TreeLayout;
+  selectedId: string | null;
+  /** Persone da evidenziare (le altre vengono attenuate). */
+  focusIds: Set<string> | null;
+  /** Risultati di ricerca. */
+  matchIds: Set<string> | null;
+  onSelect: (id: string) => void;
+  onBackgroundClick: () => void;
+  onZoomChange?: (k: number) => void;
+}
+
+const tone: Record<Gender, { main: string; soft: string }> = {
+  male: { main: 'var(--male)', soft: 'var(--male-soft)' },
+  female: { main: 'var(--female)', soft: 'var(--female-soft)' },
+  other: { main: 'var(--other)', soft: 'var(--other-soft)' },
+};
+
+const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+const PAD = 80;
+const AV = 26; // raggio avatar
+
+const Node = memo(function Node({
+  node,
+  selected,
+  dimmed,
+  matched,
+  onSelect,
+  photoBroken,
+  onPhotoError,
+}: {
+  node: LayoutNode;
+  selected: boolean;
+  dimmed: boolean;
+  matched: boolean;
+  onSelect: (id: string) => void;
+  photoBroken: boolean;
+  onPhotoError: (url: string) => void;
+}) {
+  const p = node.person;
+  const t = tone[p.gender] ?? tone.other;
+  const dead = isDeceased(p);
+  const clipId = `av-${p.id}`;
+  const life = lifespan(p);
+  return (
+    <g
+      transform={`translate(${node.x},${node.y})`}
+      className="tree-node cursor-pointer"
+      style={{ opacity: dimmed ? 0.22 : 1, transition: 'opacity .25s' }}
+      role="button"
+      tabIndex={0}
+      aria-label={`${p.firstName} ${p.lastName}${life ? `, ${life}` : ''}`}
+      aria-pressed={selected}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect(p.id);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect(p.id);
+        }
+      }}
+    >
+      {(selected || matched) && (
+        <rect
+          x={-5}
+          y={-5}
+          width={NODE_W + 10}
+          height={NODE_H + 10}
+          rx={20}
+          style={{
+            fill: 'none',
+            stroke: selected ? 'var(--brand)' : 'var(--brass)',
+            strokeWidth: selected ? 2.5 : 2,
+            strokeDasharray: selected ? undefined : '5 4',
+            opacity: selected ? 0.9 : 1,
+          }}
+        />
+      )}
+      <rect
+        width={NODE_W}
+        height={NODE_H}
+        rx={16}
+        className="tree-card"
+        style={{ fill: 'var(--surface)', stroke: selected ? t.main : 'var(--line-2)', strokeWidth: selected ? 1.5 : 1 }}
+      />
+      <rect x={0} y={18} width={3.5} height={NODE_H - 36} rx={1.75} style={{ fill: t.main }} />
+
+      <circle cx={16 + AV} cy={NODE_H / 2} r={AV} style={{ fill: t.soft, stroke: t.main, strokeOpacity: 0.35 }} />
+      {p.photoUrl && !photoBroken ? (
+        <>
+          <clipPath id={clipId}>
+            <circle cx={16 + AV} cy={NODE_H / 2} r={AV - 1} />
+          </clipPath>
+          <text
+            x={16 + AV}
+            y={NODE_H / 2 + 6}
+            textAnchor="middle"
+            className="font-serif"
+            style={{ fill: t.main, fontSize: 17, fontWeight: 600 }}
+          >
+            {initials(p)}
+          </text>
+          <image
+            href={p.photoUrl}
+            x={16}
+            y={NODE_H / 2 - AV}
+            width={AV * 2}
+            height={AV * 2}
+            preserveAspectRatio="xMidYMid slice"
+            clipPath={`url(#${clipId})`}
+            onError={() => onPhotoError(p.photoUrl!)}
+            style={{ filter: dead ? 'grayscale(0.6)' : undefined }}
+          />
+        </>
+      ) : (
+        <text
+          x={16 + AV}
+          y={NODE_H / 2 + 6}
+          textAnchor="middle"
+          className="font-serif"
+          style={{ fill: t.main, fontSize: 17, fontWeight: 600 }}
+        >
+          {initials(p)}
+        </text>
+      )}
+
+      <text x={84} y={33} style={{ fill: 'var(--ink)', fontSize: 15, fontWeight: 600 }}>
+        {truncate(p.firstName || '—', 17)}
+        {dead && (
+          <tspan dx={5} style={{ fill: 'var(--ink-3)', fontWeight: 400, fontSize: 13 }}>
+            †
+          </tspan>
+        )}
+      </text>
+      <text x={84} y={51} className="font-serif" style={{ fill: 'var(--ink-2)', fontSize: 14, fontStyle: 'italic' }}>
+        {truncate(p.lastName, 19)}
+      </text>
+      {life && (
+        <text x={84} y={68} style={{ fill: 'var(--ink-3)', fontSize: 11.5, fontVariantNumeric: 'tabular-nums', letterSpacing: 0.2 }}>
+          {life}
+        </text>
+      )}
+    </g>
+  );
+});
+
+const FamilyTree = forwardRef<FamilyTreeHandle, Props>(function FamilyTree(
+  { layout, selectedId, focusIds, matchIds, onSelect, onBackgroundClick, onZoomChange },
+  ref,
+) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const gRef = useRef<SVGGElement>(null);
+  const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const fittedRef = useRef(false);
+  const [broken, setBroken] = useState<Set<string>>(() => new Set());
+  const onPhotoError = useCallback((url: string) => setBroken((b) => (b.has(url) ? b : new Set(b).add(url))), []);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
 
   useEffect(() => {
-    if (!svgRef.current || people.length === 0) return;
-
-    const width = containerRef.current?.clientWidth || 800;
-    const height = 600;
-    const nodeWidth = 160;
-    const nodeHeight = 70;
-
-    const svg = d3.select(svgRef.current);
-    svg.selectAll('*').remove();
-
-    // Define gradients for nodes
-    const defs = svg.append('defs');
-    
-    const maleGradient = defs.append('linearGradient')
-      .attr('id', 'male-grad')
-      .attr('x1', '0%').attr('y1', '0%').attr('x2', '0%').attr('y2', '100%');
-    maleGradient.append('stop').attr('offset', '0%').attr('stop-color', '#f0f7ff');
-    maleGradient.append('stop').attr('offset', '100%').attr('stop-color', '#e0efff');
-
-    const femaleGradient = defs.append('linearGradient')
-      .attr('id', 'female-grad')
-      .attr('x1', '0%').attr('y1', '0%').attr('x2', '0%').attr('y2', '100%');
-    femaleGradient.append('stop').attr('offset', '0%').attr('stop-color', '#fff5f5');
-    femaleGradient.append('stop').attr('offset', '100%').attr('stop-color', '#ffebeb');
-
-    const g = svg.append('g');
-
-    // Zoom behavior
-    const zoom = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.05, 4])
-      .on('zoom', (event) => {
-        g.attr('transform', event.transform);
+    const svg = d3.select(svgRef.current!);
+    const zoom = d3
+      .zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.08, 2.5])
+      .on('zoom', (e) => {
+        gRef.current?.setAttribute('transform', e.transform.toString());
+        onZoomChange?.(e.transform.k);
       });
-
-    svg.call(zoom);
-
-    // Calculate generation levels based on parents
-    const levels: Record<string, number> = {};
-    const calculateLevel = (id: string, visited = new Set<string>()): number => {
-      if (levels[id] !== undefined) return levels[id];
-      if (visited.has(id)) return 0;
-      visited.add(id);
-
-      const person = people.find(p => p.id === id);
-      if (!person) return 0;
-
-      // If person has parents, level is max(parent levels) + 1
-      const fatherLevel = person.fatherId ? calculateLevel(person.fatherId, visited) : -1;
-      const motherLevel = person.motherId ? calculateLevel(person.motherId, visited) : -1;
-      
-      const maxParentLevel = Math.max(fatherLevel, motherLevel);
-      
-      // Also check if person is a spouse of someone with a level
-      // This helps keep couples on the same level
-      const spouseWithLevel = people.find(p => p.spouseIds?.includes(id) && levels[p.id] !== undefined);
-      if (spouseWithLevel) {
-        levels[id] = levels[spouseWithLevel.id];
-        return levels[id];
-      }
-
-      levels[id] = maxParentLevel === -1 ? 0 : maxParentLevel + 1;
-      return levels[id];
+    zoomRef.current = zoom;
+    svg.call(zoom).on('dblclick.zoom', null);
+    return () => {
+      svg.on('.zoom', null);
     };
+  }, [onZoomChange]);
 
-    // Run multiple passes to stabilize levels for couples
-    for (let i = 0; i < 3; i++) {
-      people.forEach(p => calculateLevel(p.id));
+  /** Adatta tutto l'albero; con `readable` non scende sotto una scala leggibile e parte dall'alto. */
+  const fit = useCallback((animate = true, readable = false) => {
+    const svgEl = svgRef.current;
+    const zoom = zoomRef.current;
+    const l = layoutRef.current;
+    if (!svgEl || !zoom || !l.nodes.length) return;
+    const { width, height } = svgEl.getBoundingClientRect();
+    if (!width || !height) return;
+    const bw = l.width + PAD * 2;
+    const bh = l.height + PAD * 2;
+    let k = Math.min(width / bw, height / bh, 1);
+    let tx = (width - l.width * k) / 2;
+    let ty = Math.max(PAD * k, (height - l.height * k) / 2);
+    if (readable && k < 0.6) {
+      // Albero molto ampio: mostra i capostipiti a una scala leggibile.
+      k = Math.min(0.6, Math.max(k, width / 1400));
+      const top = l.nodes.filter((n) => n.gen === 0);
+      const cx = top.reduce((s, n) => s + n.x + NODE_W / 2, 0) / top.length;
+      tx = width / 2 - cx * k;
+      ty = 48;
     }
+    const t = d3.zoomIdentity.translate(tx, ty).scale(k);
+    const sel = d3.select(svgEl);
+    (animate ? sel.transition().duration(550).ease(d3.easeCubicOut) : sel).call(zoom.transform as never, t);
+  }, []);
 
-    // Group by level
-    const peopleByLevel: Record<number, Person[]> = {};
-    people.forEach(p => {
-      const lvl = levels[p.id] || 0;
-      if (!peopleByLevel[lvl]) peopleByLevel[lvl] = [];
-      peopleByLevel[lvl].push(p);
-    });
+  const centerOn = useCallback((id: string, opts?: { zoom?: boolean; yRatio?: number }) => {
+    const svgEl = svgRef.current;
+    const zoom = zoomRef.current;
+    const n = layoutRef.current.nodeById.get(id);
+    if (!svgEl || !zoom || !n) return;
+    const { width, height } = svgEl.getBoundingClientRect();
+    const current = d3.zoomTransform(svgEl);
+    const k = opts?.zoom === false ? current.k : Math.max(current.k, 0.85);
+    const t = d3.zoomIdentity
+      .translate(width / 2 - (n.x + NODE_W / 2) * k, height * (opts?.yRatio ?? 0.5) - (n.y + NODE_H / 2) * k)
+      .scale(k);
+    d3.select(svgEl).transition().duration(600).ease(d3.easeCubicInOut).call(zoom.transform as never, t);
+  }, []);
 
-    const nodes: any[] = [];
-    const links: any[] = [];
+  useImperativeHandle(
+    ref,
+    () => ({
+      zoomIn: () => zoomRef.current && d3.select(svgRef.current!).transition().duration(250).call(zoomRef.current.scaleBy as never, 1.3),
+      zoomOut: () => zoomRef.current && d3.select(svgRef.current!).transition().duration(250).call(zoomRef.current.scaleBy as never, 1 / 1.3),
+      fit: () => fit(true),
+      centerOn,
+    }),
+    [fit, centerOn],
+  );
 
-    // Position nodes with more spacing
-    Object.entries(peopleByLevel).forEach(([lvlStr, levelPeople]) => {
-      const lvl = parseInt(lvlStr);
-      const spacing = nodeWidth + 60;
-      const totalWidth = levelPeople.length * spacing;
-      const startX = (width - totalWidth) / 2;
+  // Adatta la vista la prima volta che ci sono dati.
+  useEffect(() => {
+    if (!layout.nodes.length) {
+      fittedRef.current = false;
+      return;
+    }
+    if (!fittedRef.current) {
+      fittedRef.current = true;
+      requestAnimationFrame(() => fit(false, true));
+    }
+  }, [layout, fit]);
 
-      levelPeople.forEach((p, i) => {
-        const x = startX + i * spacing;
-        const y = lvl * 200 + 100;
-        nodes.push({ ...p, x, y });
-      });
-    });
-
-    // Create links
-    nodes.forEach(node => {
-      if (node.fatherId) {
-        const father = nodes.find(n => n.id === node.fatherId);
-        if (father) links.push({ source: father, target: node, type: 'parent' });
-      }
-      if (node.motherId) {
-        const mother = nodes.find(n => n.id === node.motherId);
-        if (mother) links.push({ source: mother, target: node, type: 'parent' });
-      }
-      if (node.spouseIds) {
-        node.spouseIds.forEach((sid: string) => {
-          const spouse = nodes.find(n => n.id === sid);
-          if (spouse && node.id < spouse.id) {
-            links.push({ source: node, target: spouse, type: 'spouse' });
-          }
-        });
-      }
-    });
-
-    // Draw links with better paths
-    g.selectAll('.link')
-      .data(links)
-      .enter()
-      .append('path')
-      .attr('class', 'link')
-      .attr('d', (d: any) => {
-        const sx = d.source.x + nodeWidth / 2;
-        const sy = d.source.y + nodeHeight / 2;
-        const tx = d.target.x + nodeWidth / 2;
-        const ty = d.target.y + nodeHeight / 2;
-
-        if (d.type === 'spouse') {
-          return `M ${sx} ${sy} L ${tx} ${ty}`;
-        } else {
-          const startX = d.source.x + nodeWidth / 2;
-          const startY = d.source.y + nodeHeight;
-          const endX = d.target.x + nodeWidth / 2;
-          const endY = d.target.y;
-          const midY = (startY + endY) / 2;
-          return `M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}`;
-        }
-      })
-      .attr('stroke', (d: any) => d.type === 'spouse' ? '#9f5f5f' : '#5a5a40')
-      .attr('stroke-width', (d: any) => d.type === 'spouse' ? 3 : 2)
-      .attr('fill', 'none')
-      .attr('stroke-dasharray', (d: any) => d.type === 'spouse' ? '8,4' : '0')
-      .attr('opacity', 0.6);
-
-    // Draw nodes
-    const nodeGroups = g.selectAll('.node')
-      .data(nodes)
-      .enter()
-      .append('g')
-      .attr('class', 'node')
-      .attr('transform', (d: any) => `translate(${d.x}, ${d.y})`)
-      .on('click', (event, d) => onSelectPerson?.(d))
-      .style('cursor', 'pointer');
-
-    // Card background
-    nodeGroups.append('rect')
-      .attr('width', nodeWidth)
-      .attr('height', nodeHeight)
-      .attr('rx', 20)
-      .attr('fill', 'white')
-      .attr('stroke', (d: any) => d.gender === 'male' ? '#3b82f6' : d.gender === 'female' ? '#f43f5e' : '#64748b')
-      .attr('stroke-width', 1)
-      .attr('class', 'transition-all duration-300 hover:stroke-[2px] shadow-sm');
-
-    // Photo or Icon
-    const photoGroup = nodeGroups.append('g')
-      .attr('transform', 'translate(10, 10)');
-
-    photoGroup.append('rect')
-      .attr('width', 50)
-      .attr('height', 50)
-      .attr('rx', 15)
-      .attr('fill', (d: any) => d.gender === 'male' ? '#f0f7ff' : d.gender === 'female' ? '#fff5f5' : '#f8fafc');
-
-    // Add clipPath for circular photos
-    defs.selectAll('.node-clip')
-      .data(nodes)
-      .enter()
-      .append('clipPath')
-      .attr('id', (d: any) => `clip-${d.id}`)
-      .append('rect')
-      .attr('width', 50)
-      .attr('height', 50)
-      .attr('rx', 15);
-
-    photoGroup.append('image')
-      .attr('href', (d: any) => d.photoUrl || '')
-      .attr('width', 50)
-      .attr('height', 50)
-      .attr('preserveAspectRatio', 'xMidYMid slice')
-      .attr('clip-path', (d: any) => `url(#clip-${d.id})`)
-      .attr('opacity', (d: any) => d.photoUrl ? 1 : 0);
-
-    photoGroup.append('circle')
-      .attr('cx', 25)
-      .attr('cy', 25)
-      .attr('r', 15)
-      .attr('fill', (d: any) => d.gender === 'male' ? '#3b82f6' : d.gender === 'female' ? '#f43f5e' : '#64748b')
-      .attr('opacity', (d: any) => d.photoUrl ? 0 : 0.2);
-
-    // Name
-    nodeGroups.append('text')
-      .attr('x', 70)
-      .attr('y', 28)
-      .attr('class', 'serif font-bold')
-      .attr('font-size', '14px')
-      .attr('fill', '#1a1a1a')
-      .text((d: any) => `${d.firstName}`);
-
-    nodeGroups.append('text')
-      .attr('x', 70)
-      .attr('y', 44)
-      .attr('class', 'serif italic')
-      .attr('font-size', '12px')
-      .attr('fill', '#4a4a4a')
-      .text((d: any) => `${d.lastName}`);
-
-    // Dates
-    nodeGroups.append('text')
-      .attr('x', 70)
-      .attr('y', 58)
-      .attr('font-size', '10px')
-      .attr('fill', '#888')
-      .attr('class', 'font-medium')
-      .text((d: any) => {
-        const birth = d.birthDate ? d.birthDate.split('-')[0] : '?';
-        const death = d.deathDate ? d.deathDate.split('-')[0] : '';
-        return `${birth}${death ? ' - ' + death : ''}`;
-      });
-
-    // Center the tree
-    const initialScale = 0.7;
-    const initialX = (width - width * initialScale) / 2;
-    const initialY = 50;
-    svg.call(zoom.transform, d3.zoomIdentity.translate(initialX, initialY).scale(initialScale));
-
-  }, [people, onSelectPerson]);
+  const highlightLink = (ids: string[], type: 'child' | 'spouse' = 'spouse') => {
+    if (!focusIds) return true;
+    if (type === 'spouse') return ids.every((id) => focusIds.has(id));
+    // Figlio evidenziato se lui e almeno un genitore fanno parte della linea.
+    return focusIds.has(ids[ids.length - 1]) && ids.slice(0, -1).some((id) => focusIds.has(id));
+  };
 
   return (
-    <div ref={containerRef} className="w-full h-full bg-slate-50 rounded-xl overflow-hidden relative border border-slate-200">
-      <svg ref={svgRef} className="w-full h-full" />
-      <div className="absolute bottom-4 right-4 flex flex-col gap-2 bg-white/80 backdrop-blur p-3 rounded-lg border border-slate-200 text-xs shadow-sm">
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-blue-500" />
-          <span>Maschio</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-rose-500" />
-          <span>Femmina</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-1 h-3 bg-slate-400" />
-          <span>Genitore-Figlio</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-0.5 border-t border-dashed border-rose-500" />
-          <span>Coniugi</span>
-        </div>
-      </div>
-    </div>
+    <svg
+      ref={svgRef}
+      className="h-full w-full touch-none select-none outline-none"
+      onClick={onBackgroundClick}
+      role="application"
+      aria-label="Albero genealogico interattivo: trascina per spostarti, usa la rotella o il pizzico per lo zoom"
+    >
+      <g ref={gRef}>
+        <g fill="none">
+          {layout.links.map((l) => {
+            const on = highlightLink(l.ids, l.type);
+            const isSpouse = l.type === 'spouse';
+            return (
+              <path
+                key={l.key}
+                d={l.d}
+                style={{
+                  stroke: isSpouse ? 'var(--brass)' : focusIds && on ? 'var(--brand)' : 'var(--link)',
+                  strokeWidth: focusIds && on ? 2.25 : isSpouse ? 1.75 : 1.5,
+                  strokeDasharray: l.loose ? '6 5' : undefined,
+                  opacity: on ? (isSpouse ? 0.9 : 0.75) : 0.15,
+                  transition: 'opacity .25s, stroke .25s',
+                }}
+              />
+            );
+          })}
+        </g>
+        {layout.links
+          .filter((l) => l.type === 'spouse' && l.mid)
+          .map((l) => (
+            <g
+              key={`h-${l.key}`}
+              transform={`translate(${l.mid!.x},${l.mid!.y})`}
+              style={{ opacity: highlightLink(l.ids) ? 1 : 0.2, transition: 'opacity .25s' }}
+            >
+              <circle r={10} style={{ fill: 'var(--paper)', stroke: 'var(--brass)', strokeWidth: 1.25 }} />
+              <path
+                d="M0 3.6 C-4.6 0.4 -5.4 -2.4 -3.4 -3.9 C-2 -4.9 -0.6 -4.3 0 -3.2 C0.6 -4.3 2 -4.9 3.4 -3.9 C5.4 -2.4 4.6 0.4 0 3.6 Z"
+                style={{ fill: 'var(--brass)' }}
+              />
+            </g>
+          ))}
+        {layout.nodes.map((n) => (
+          <Node
+            key={n.person.id}
+            node={n}
+            selected={n.person.id === selectedId}
+            dimmed={!!focusIds && !focusIds.has(n.person.id)}
+            matched={!!matchIds?.has(n.person.id)}
+            onSelect={onSelect}
+            photoBroken={!!n.person.photoUrl && broken.has(n.person.photoUrl)}
+            onPhotoError={onPhotoError}
+          />
+        ))}
+      </g>
+    </svg>
   );
-};
+});
 
 export default FamilyTree;

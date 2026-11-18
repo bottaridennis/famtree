@@ -1,692 +1,714 @@
-import React, { Component, useState, useEffect } from 'react';
-import { 
-  db, 
-  auth, 
-  collection, 
-  onSnapshot, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
-  signInWithPopup, 
-  googleProvider, 
-  signOut,
-  onAuthStateChanged,
-  getDoc,
-  handleFirestoreError,
-  OperationType,
-  writeBatch
-} from './firebase';
-import { Person, UserProfile } from './types';
-import FamilyTree from './components/FamilyTree';
-import PersonForm from './components/PersonForm';
-import { 
-  Users, 
-  Settings, 
-  LogOut, 
-  LogIn, 
-  Plus, 
-  ChevronRight, 
-  Info,
-  ShieldCheck,
-  TreePine,
-  X,
-  Baby,
-  Heart,
-  Calendar,
-  BookOpen,
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion, useDragControls } from 'motion/react';
+import {
+  BookUser,
   Database,
-  Trash2
+  Download,
+  FileJson,
+  LogIn,
+  LogOut,
+  Maximize2,
+  Minus,
+  Moon,
+  MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
+  Sun,
+  Trash2,
+  Upload,
+  Users,
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import FamilyTree, { type FamilyTreeHandle } from './components/FamilyTree';
+import PersonForm from './components/PersonForm';
+import PersonPanel from './components/PersonPanel';
+import Directory from './components/Directory';
+import { Menu } from './components/Menu';
+import { Avatar, Button, IconButton, Kbd, Spinner, isModalOpen } from './components/ui';
+import { useFeedback } from './components/feedback';
+import { useAuth } from './hooks/useAuth';
+import { usePeople } from './hooks/usePeople';
+import { useTheme } from './hooks/useTheme';
+import { computeLayout } from './lib/layout';
+import {
+  ancestorsOf,
+  computeStats,
+  descendantsOf,
+  fullName,
+  indexPeople,
+  matchesQuery,
+  spousesOf,
+} from './lib/family';
+import {
+  buildArchive,
+  deleteAll,
+  deletePerson,
+  downloadFile,
+  generateDemo,
+  importPeople,
+  parseArchive,
+  savePerson,
+  toGedcom,
+} from './lib/data';
+import { describeFirebaseError } from './firebase';
+import { APP_NAME, APP_TAGLINE } from './config';
+import type { Person, PersonDraft } from './types';
+import { cn } from './utils';
 
-const App: React.FC = () => {
-  const [people, setPeople] = useState<Person[]>([]);
-  const [user, setUser] = useState<UserProfile | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [view, setView] = useState<'public' | 'admin'>('public');
-  const [editingPerson, setEditingPerson] = useState<Partial<Person> | null>(null);
-  const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isClearing, setIsClearing] = useState(false);
-  const [generationProgress, setGenerationProgress] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+interface EditingState {
+  draft: PersonDraft;
+  /** Dopo il salvataggio, collega la nuova persona come genitore di questo id. */
+  parentOf?: string;
+}
 
-  const checkAdminStatus = async (firebaseUser: any) => {
-    if (!firebaseUser) return false;
-    // Force reload to get latest emailVerified status
-    try {
-      await firebaseUser.reload();
-    } catch (e) {
-      console.error("Error reloading user:", e);
-    }
-    return firebaseUser.email === 'dennisbottari@gmail.com' && firebaseUser.emailVerified;
-  };
-
+const useIsDesktop = () => {
+  const q = '(min-width: 1024px)';
+  const [m, setM] = useState(() => window.matchMedia(q).matches);
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        const isAdminUser = await checkAdminStatus(firebaseUser);
-        setIsAdmin(isAdminUser);
-        
-        if (firebaseUser.email === 'dennisbottari@gmail.com' && !firebaseUser.emailVerified) {
-          setError('Il tuo account admin richiede la verifica dell\'email per operare. Controlla la tua posta e ricarica la pagina.');
-        }
-
-        setUser({
-          uid: firebaseUser.uid,
-          email: firebaseUser.email || '',
-          role: isAdminUser ? 'admin' : 'user'
-        });
-      } else {
-        setUser(null);
-        setIsAdmin(false);
-      }
-      setLoading(false);
-    });
-
-    const unsubscribePeople = onSnapshot(collection(db, 'people'), (snapshot) => {
-      const peopleData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Person[];
-      setPeople(peopleData);
-
-      // Add template data if empty
-      if (peopleData.length === 0 && isAdmin) {
-        addTemplateData();
-      }
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'people');
-    });
-
-    return () => {
-      unsubscribeAuth();
-      unsubscribePeople();
-    };
-  }, [isAdmin]);
-
-  const handleClearAll = async () => {
-    if (isClearing) return;
-    if (!window.confirm('Sei sicuro di voler eliminare TUTTI i membri? Questa azione è irreversibile.')) return;
-
-    setIsClearing(true);
-    setError(null);
-    try {
-      const batchSize = 500;
-      let count = 0;
-      
-      // We process in chunks to stay within Firestore limits
-      const chunks = [];
-      for (let i = 0; i < people.length; i += batchSize) {
-        chunks.push(people.slice(i, i + batchSize));
-      }
-
-      for (const chunk of chunks) {
-        const batch = writeBatch(db);
-        chunk.forEach(p => {
-          batch.delete(doc(db, 'people', p.id));
-          count++;
-        });
-        await batch.commit();
-      }
-      
-      console.log(`Eliminati ${count} membri.`);
-      setSelectedPerson(null);
-      setEditingPerson(null);
-    } catch (err: any) {
-      console.error('Clear error:', err);
-      setError(err.message || 'Errore durante l\'eliminazione dei dati.');
-      handleFirestoreError(err, OperationType.DELETE, 'people');
-    } finally {
-      setIsClearing(false);
-    }
-  };
-
-  const addTemplateData = async () => {
-    if (isGenerating) return;
-    setIsGenerating(true);
-    setGenerationProgress(0);
-    setError(null);
-    try {
-      const firstNames = [
-        'Giovanni', 'Maria', 'Luca', 'Elena', 'Giulia', 'Marco', 'Sofia', 'Matteo', 'Alessandro', 'Beatrice',
-        'Francesco', 'Chiara', 'Lorenzo', 'Alice', 'Riccardo', 'Emma', 'Gabriele', 'Vittoria', 'Leonardo', 'Sara',
-        'Tommaso', 'Martina', 'Edoardo', 'Giorgia', 'Federico', 'Anna', 'Mattia', 'Francesca', 'Pietro', 'Elisa',
-        'Filippo', 'Ludovica', 'Samuele', 'Aurora', 'Davide', 'Ginevra', 'Simone', 'Greta', 'Andrea', 'Noemi',
-        'Christian', 'Matilde', 'Michele', 'Viola', 'Antonio', 'Gaia', 'Giuseppe', 'Bianca', 'Domenico', 'Adele',
-        'Salvatore', 'Elena', 'Vincenzo', 'Arianna', 'Pasquale', 'Irene', 'Raffaele', 'Rebecca', 'Carmine', 'Marta',
-        'Stefano', 'Paola', 'Roberto', 'Silvia', 'Claudio', 'Simona', 'Enrico', 'Laura', 'Massimo', 'Daniela',
-        'Fabio', 'Monica', 'Valeria', 'Paolo', 'Roberta', 'Giorgio', 'Patrizia', 'Gianluca', 'Cristina', 'Mauro'
-      ];
-      const lastNames = ['Rossi', 'Bianchi', 'Verdi', 'Neri', 'Romano', 'Gallo', 'Costa', 'Fontana', 'Ricci', 'Bruno'];
-      
-      let personCount = 0;
-
-      const createPerson = async (firstName: string, lastName: string, gender: 'male' | 'female', birthYear: number, fatherId?: string, motherId?: string) => {
-        if (!firstName) firstName = 'Membro'; // Fallback per sicurezza
-        personCount++;
-        setGenerationProgress(personCount);
-        const birthDate = `${birthYear}-01-01`;
-        
-        const personData: any = {
-          firstName,
-          lastName,
-          gender,
-          birthDate,
-          bio: `Membro della stirpe ${lastName}, generazione ${Math.floor((2026 - birthYear) / 25)}.`,
-          photoUrl: `https://picsum.photos/seed/${firstName}${lastName}${personCount}/400/400`
-        };
-
-        if (fatherId) personData.fatherId = fatherId;
-        if (motherId) personData.motherId = motherId;
-
-        return await addDoc(collection(db, 'people'), personData);
-      };
-
-      // Generation 1 (2 people)
-      const gen1Father = await createPerson('Giovanni', 'Rossi', 'male', 1930);
-      const gen1Mother = await createPerson('Maria', 'Bianchi', 'female', 1935);
-      await updateDoc(doc(db, 'people', gen1Father.id), { spouseIds: [gen1Mother.id] });
-      await updateDoc(doc(db, 'people', gen1Mother.id), { spouseIds: [gen1Father.id] });
-
-      // Generation 2 (4 children + 4 spouses = 8 people)
-      for (let i = 0; i < 4; i++) {
-        const gender: 'male' | 'female' = i % 2 === 0 ? 'male' : 'female';
-        const child = await createPerson(firstNames[i + 2], 'Rossi', gender, 1960, gen1Father.id, gen1Mother.id);
-        const spouseGender = gender === 'male' ? 'female' : 'male';
-        const spouse = await createPerson(firstNames[i + 6], lastNames[i % lastNames.length], spouseGender, 1965);
-        
-        await updateDoc(doc(db, 'people', child.id), { spouseIds: [spouse.id] });
-        await updateDoc(doc(db, 'people', spouse.id), { spouseIds: [child.id] });
-
-        // Generation 3 (4 children per Gen 2 couple = 16 children)
-        for (let j = 0; j < 4; j++) {
-          const g3Gender: 'male' | 'female' = j % 2 === 0 ? 'male' : 'female';
-          const g3Child = await createPerson(firstNames[10 + i * 4 + j], 'Rossi', g3Gender, 1985, 
-            gender === 'male' ? child.id : spouse.id,
-            gender === 'female' ? child.id : spouse.id
-          );
-
-          // Generation 3 spouses (16 people)
-          const g3SpouseGender = g3Gender === 'male' ? 'female' : 'male';
-          const g3Spouse = await createPerson(firstNames[26 + i * 4 + j], lastNames[(i + j) % lastNames.length], g3SpouseGender, 1988);
-          await updateDoc(doc(db, 'people', g3Child.id), { spouseIds: [g3Spouse.id] });
-          await updateDoc(doc(db, 'people', g3Spouse.id), { spouseIds: [g3Child.id] });
-
-          // Generation 4 (2 children per Gen 3 couple = 32 children)
-          for (let k = 0; k < 2; k++) {
-            const g4Gender: 'male' | 'female' = k % 2 === 0 ? 'male' : 'female';
-            await createPerson(firstNames[42 + (i * 4 + j) * 2 + k], 'Rossi', g4Gender, 2015,
-              g3Gender === 'male' ? g3Child.id : g3Spouse.id,
-              g3Gender === 'female' ? g3Child.id : g3Spouse.id
-            );
-          }
-        }
-      }
-
-      console.log(`Generati ${personCount} membri della stirpe.`);
-      setGenerationProgress(personCount);
-      // Wait a bit to show completion
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    } catch (err: any) {
-      console.error('Generation error:', err);
-      setError(err.message || 'Errore durante la generazione dei dati.');
-      handleFirestoreError(err, OperationType.CREATE, 'people');
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  const handleLogin = async () => {
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (error) {
-      console.error('Login error:', error);
-    }
-  };
-
-  const handleLogout = async () => {
-    await signOut(auth);
-    setView('public');
-  };
-
-  const handleSavePerson = async (personData: Partial<Person>) => {
-    try {
-      if (personData.id) {
-        const { id, ...data } = personData;
-        await updateDoc(doc(db, 'people', id), data);
-      } else {
-        await addDoc(collection(db, 'people'), personData);
-      }
-      setEditingPerson(null);
-    } catch (error) {
-      handleFirestoreError(error, personData.id ? OperationType.UPDATE : OperationType.CREATE, 'people');
-    }
-  };
-
-  const handleQuickAddChild = (parent: Person) => {
-    setEditingPerson({
-      lastName: parent.lastName,
-      fatherId: parent.gender === 'male' ? parent.id : undefined,
-      motherId: parent.gender === 'female' ? parent.id : undefined,
-    });
-  };
-
-  const handleQuickAddSpouse = (person: Person) => {
-    setEditingPerson({
-      lastName: person.lastName,
-      spouseIds: [person.id],
-    });
-  };
-
-  const handleDeletePerson = async (id: string) => {
-    if (window.confirm('Sei sicuro di voler eliminare questa persona?')) {
-      try {
-        await deleteDoc(doc(db, 'people', id));
-        setEditingPerson(null);
-        setSelectedPerson(null);
-      } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, `people/${id}`);
-      }
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-[#fdfcf9] flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#5a5a40]"></div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-[#fdfcf9] text-slate-900 font-sans selection:bg-[#5a5a40]/10">
-      {/* Header */}
-      <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-[#5a5a40] p-2.5 rounded-xl shadow-lg shadow-[#5a5a40]/20">
-              <TreePine className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-slate-900 serif">
-                Archivio Genealogico
-              </h1>
-              <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400 font-bold">Storia di Famiglia</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {user ? (
-              <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl">
-                <div className="px-3 py-2 flex items-center gap-2 text-slate-400 border-r border-slate-200 mr-1">
-                  {isAdmin ? (
-                    <ShieldCheck className="w-4 h-4 text-emerald-500" />
-                  ) : (
-                    <Users className="w-4 h-4" />
-                  )}
-                  <span className="text-[10px] font-bold uppercase tracking-wider hidden sm:inline">
-                    {isAdmin ? 'Admin' : 'Ospite'}
-                  </span>
-                </div>
-                <button
-                  onClick={() => setView('public')}
-                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
-                    view === 'public' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  Esplora
-                </button>
-                {isAdmin && (
-                  <button
-                    onClick={() => setView('admin')}
-                    className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
-                      view === 'admin' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'
-                    }`}
-                  >
-                    Gestisci
-                  </button>
-                )}
-              </div>
-            ) : (
-              <button
-                onClick={handleLogin}
-                className="flex items-center gap-2 bg-[#5a5a40] hover:bg-[#4a4a30] text-white px-6 py-2.5 rounded-xl font-semibold transition-all shadow-lg shadow-[#5a5a40]/20 active:scale-95"
-              >
-                <LogIn className="w-4 h-4" />
-                Accedi
-              </button>
-            )}
-
-            {user && (
-              <button
-                onClick={handleLogout}
-                className="p-2.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
-                title="Esci"
-              >
-                <LogOut className="w-5 h-5" />
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
-          {/* Main Content Area */}
-          <div className={`${(view === 'admin' || selectedPerson) ? 'lg:col-span-8' : 'lg:col-span-12'} space-y-8`}>
-            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-              <div>
-                <h2 className="text-4xl font-bold text-slate-900 serif">
-                  {view === 'admin' ? 'Pannello di Controllo' : 'L\'Albero della Vita'}
-                </h2>
-                <p className="text-slate-500 mt-2 max-w-xl">
-                  {view === 'admin' 
-                    ? 'Organizza la struttura famigliare, aggiungi nuovi rami e documenta le generazioni.' 
-                    : 'Naviga tra le generazioni per scoprire le radici della nostra famiglia.'}
-                </p>
-              </div>
-              {view === 'admin' && (
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    onClick={handleClearAll}
-                    disabled={isClearing || isGenerating}
-                    className={`bg-rose-50 hover:bg-rose-100 text-rose-600 px-6 py-3 rounded-xl font-semibold flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap ${(isClearing || isGenerating) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
-                    {isClearing ? (
-                      <div className="w-5 h-5 border-2 border-rose-400 border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                      <Trash2 className="w-5 h-5" />
-                    )}
-                    {isClearing ? 'Eliminazione...' : 'Svuota Stirpe'}
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (window.confirm('Vuoi caricare i dati demo? Questo aggiungerà circa 60 nuovi membri alla stirpe.')) {
-                        addTemplateData();
-                      }
-                    }}
-                    disabled={isGenerating || isClearing}
-                    className={`bg-slate-100 hover:bg-slate-200 text-slate-600 px-6 py-3 rounded-xl font-semibold flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap ${(isGenerating || isClearing) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
-                    {isGenerating ? (
-                      <div className="w-5 h-5 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                      <Database className="w-5 h-5" />
-                    )}
-                    {isGenerating 
-                      ? `Generazione (${generationProgress}/74)...` 
-                      : people.length > 0 
-                        ? 'Aggiungi altri 70' 
-                        : 'Carica Stirpe Massiva (70)'}
-                  </button>
-                  <button
-                    onClick={() => setEditingPerson({})}
-                    className="bg-[#5a5a40] hover:bg-[#4a4a30] text-white px-6 py-3 rounded-xl font-semibold flex items-center gap-2 shadow-xl shadow-[#5a5a40]/20 transition-all active:scale-95 whitespace-nowrap"
-                  >
-                    <Plus className="w-5 h-5" />
-                    Nuovo Membro
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {error && (
-              <div className="bg-rose-50 border border-rose-100 text-rose-600 p-4 rounded-2xl flex items-center justify-between">
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                  <Info className="w-5 h-5 flex-shrink-0" />
-                  <p className="text-sm font-medium">{error}</p>
-                  {error.includes('verifica') && (
-                    <button 
-                      onClick={async () => {
-                        if (auth.currentUser) {
-                          await auth.currentUser.reload();
-                          const isAdminUser = auth.currentUser.email === 'dennisbottari@gmail.com' && auth.currentUser.emailVerified;
-                          setIsAdmin(isAdminUser);
-                          if (isAdminUser) setError(null);
-                        }
-                      }}
-                      className="text-xs bg-rose-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-rose-700 transition-all active:scale-95"
-                    >
-                      Riprova Verifica
-                    </button>
-                  )}
-                </div>
-                <button onClick={() => setError(null)} className="p-1 hover:bg-rose-100 rounded-lg transition-all ml-4">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            )}
-
-            <div className="h-[750px] relative group">
-              <div className="absolute inset-0 bg-white/40 rounded-3xl border border-slate-200 -z-10 blur-xl group-hover:blur-2xl transition-all duration-500" />
-              <FamilyTree 
-                people={people} 
-                onSelectPerson={(p) => view === 'admin' ? setEditingPerson(p) : setSelectedPerson(p)} 
-              />
-              
-              {/* Floating Controls Hint */}
-              <div className="absolute top-6 left-6 bg-white/90 backdrop-blur px-4 py-2 rounded-full border border-slate-200 text-[10px] font-bold uppercase tracking-widest text-slate-400 shadow-sm pointer-events-none">
-                Usa il mouse per zoom e trascinamento
-              </div>
-            </div>
-          </div>
-
-          {/* Sidebar Area */}
-          <AnimatePresence mode="wait">
-            {(view === 'admin' || selectedPerson) && (
-              <motion.div 
-                key={selectedPerson?.id || 'admin-sidebar'}
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 20 }}
-                className="lg:col-span-4 space-y-8"
-              >
-                {selectedPerson ? (
-                  <div className="bg-white p-0 rounded-[2.5rem] border border-slate-200 shadow-sm sticky top-28 overflow-hidden flex flex-col">
-                    {/* Profile Header with Photo */}
-                    <div className="relative h-64 bg-slate-100 overflow-hidden">
-                      {selectedPerson.photoUrl ? (
-                        <img 
-                          src={selectedPerson.photoUrl} 
-                          alt={`${selectedPerson.firstName} ${selectedPerson.lastName}`} 
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className={`w-full h-full flex items-center justify-center ${
-                          selectedPerson.gender === 'male' ? 'bg-blue-50 text-blue-200' : 'bg-rose-50 text-rose-200'
-                        }`}>
-                          <Users className="w-24 h-24" />
-                        </div>
-                      )}
-                      
-                      {/* Close Button */}
-                      <button 
-                        onClick={() => setSelectedPerson(null)}
-                        className="absolute top-4 right-4 p-2 bg-white/80 backdrop-blur hover:bg-white rounded-full transition-all shadow-sm group"
-                      >
-                        <X className="w-5 h-5 text-slate-400 group-hover:text-slate-600" />
-                      </button>
-
-                      {/* Status Badge */}
-                      <div className="absolute bottom-4 left-4">
-                        <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest shadow-sm ${
-                          selectedPerson.deathDate 
-                            ? 'bg-rose-500 text-white' 
-                            : 'bg-emerald-500 text-white'
-                        }`}>
-                          {selectedPerson.deathDate ? 'In Memoria' : 'Vivente'}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="p-8 space-y-8">
-                      <div>
-                        <h3 className="text-4xl font-bold text-slate-900 serif mb-1 leading-tight">
-                          {selectedPerson.firstName} {selectedPerson.lastName}
-                        </h3>
-                        <p className="text-[#5a5a40] text-sm font-bold uppercase tracking-[0.2em] flex items-center gap-2">
-                          <Calendar className="w-4 h-4" />
-                          {selectedPerson.birthDate ? new Date(selectedPerson.birthDate).toLocaleDateString('it-IT', { year: 'numeric', month: 'long', day: 'numeric' }) : 'Data ignota'} 
-                          {selectedPerson.deathDate ? ` — ${new Date(selectedPerson.deathDate).toLocaleDateString('it-IT', { year: 'numeric', month: 'long', day: 'numeric' })}` : ''}
-                        </p>
-                      </div>
-
-                      <div className="space-y-8">
-                        <section>
-                          <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
-                            <Users className="w-3 h-3" /> Legami Familiari
-                          </h4>
-                          <div className="grid grid-cols-1 gap-4">
-                            <div className="p-5 bg-slate-50 rounded-[1.5rem] border border-slate-100 flex items-center gap-4">
-                              <div className="bg-white p-2.5 rounded-xl shadow-sm">
-                                <Users className="w-5 h-5 text-slate-400" />
-                              </div>
-                              <div>
-                                <p className="text-[10px] text-slate-400 uppercase font-bold mb-0.5">Genitori</p>
-                                <div className="flex flex-col">
-                                  <span className="text-sm font-semibold text-slate-700">
-                                    {people.find(p => p.id === selectedPerson.fatherId)?.firstName || '—'} (P)
-                                  </span>
-                                  <span className="text-sm font-semibold text-slate-700">
-                                    {people.find(p => p.id === selectedPerson.motherId)?.firstName || '—'} (M)
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-                            
-                            {selectedPerson.spouseIds && selectedPerson.spouseIds.length > 0 && (
-                              <div className="p-5 bg-rose-50/50 rounded-[1.5rem] border border-rose-100 flex items-center gap-4">
-                                <div className="bg-white p-2.5 rounded-xl shadow-sm">
-                                  <Heart className="w-5 h-5 text-rose-400" />
-                                </div>
-                                <div>
-                                  <p className="text-[10px] text-rose-400 uppercase font-bold mb-0.5">Coniuge</p>
-                                  <span className="text-sm font-bold text-rose-900">
-                                    {people.find(p => p.id === selectedPerson.spouseIds?.[0])?.firstName} {people.find(p => p.id === selectedPerson.spouseIds?.[0])?.lastName}
-                                  </span>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </section>
-
-                        {selectedPerson.bio && (
-                          <section className="bg-[#5a5a40]/5 p-6 rounded-[2rem] border border-[#5a5a40]/10">
-                            <h4 className="text-[10px] font-bold text-[#5a5a40] uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
-                              <BookOpen className="w-3 h-3" /> Frammenti di Storia
-                            </h4>
-                            <p className="text-slate-700 leading-relaxed serif text-xl italic opacity-90">
-                              "{selectedPerson.bio}"
-                            </p>
-                          </section>
-                        )}
-
-                        {isAdmin && view === 'admin' && (
-                          <div className="pt-6 border-t border-slate-100 flex flex-wrap gap-3">
-                            <button 
-                              onClick={() => handleQuickAddChild(selectedPerson)}
-                              className="flex-1 bg-slate-900 text-white text-xs py-4 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-slate-800 transition-all active:scale-95 shadow-lg shadow-slate-900/10"
-                            >
-                              <Baby className="w-4 h-4" />
-                              Aggiungi Figlio
-                            </button>
-                            <button 
-                              onClick={() => handleQuickAddSpouse(selectedPerson)}
-                              className="flex-1 bg-rose-600 text-white text-xs py-4 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-rose-700 transition-all active:scale-95 shadow-lg shadow-rose-600/10"
-                            >
-                              <Heart className="w-4 h-4" />
-                              Aggiungi Coniuge
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-6 sticky top-28">
-                    <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
-                      <h3 className="font-bold text-slate-900 mb-6 flex items-center gap-2 serif text-xl">
-                        <Users className="w-6 h-6 text-[#5a5a40]" />
-                        Membri Famiglia
-                      </h3>
-                      <div className="space-y-2 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-                        {people.sort((a, b) => a.firstName.localeCompare(b.firstName)).map(p => (
-                          <button
-                            key={p.id}
-                            onClick={() => setEditingPerson(p)}
-                            className="w-full text-left p-3 rounded-2xl hover:bg-slate-50 border border-transparent hover:border-slate-200 transition-all group flex items-center gap-4"
-                          >
-                            <div className="w-12 h-12 rounded-xl overflow-hidden bg-slate-100 flex-shrink-0 border border-slate-200">
-                              {p.photoUrl ? (
-                                <img src={p.photoUrl} alt={p.firstName} className="w-full h-full object-cover" />
-                              ) : (
-                                <div className={`w-full h-full flex items-center justify-center ${
-                                  p.gender === 'male' ? 'bg-blue-50 text-blue-200' : 'bg-rose-50 text-rose-200'
-                                }`}>
-                                  <Users className="w-6 h-6" />
-                                </div>
-                              )}
-                            </div>
-                            <div className="flex-1">
-                              <p className="font-bold text-slate-800 group-hover:text-[#5a5a40] serif">{p.firstName} {p.lastName}</p>
-                              <p className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-                                {p.gender === 'male' ? 'Uomo' : 'Donna'}
-                              </p>
-                            </div>
-                            <ChevronRight className="w-4 h-4 text-slate-300 group-hover:translate-x-1 transition-transform" />
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="bg-[#5a5a40] p-8 rounded-3xl text-white shadow-xl shadow-[#5a5a40]/20">
-                      <h4 className="font-bold serif text-lg mb-2">Suggerimento Admin</h4>
-                      <p className="text-white/70 text-sm leading-relaxed">
-                        Puoi cliccare direttamente sui nomi nell'albero per modificarli velocemente o aggiungere relazioni.
-                      </p>
-                    </div>
-                  </div>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </main>
-
-      {/* Modals */}
-      <AnimatePresence>
-        {editingPerson && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-            >
-              <PersonForm
-                person={editingPerson}
-                people={people}
-                onSave={handleSavePerson}
-                onCancel={() => setEditingPerson(null)}
-                onDelete={handleDeletePerson}
-              />
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Footer */}
-      <footer className="bg-white border-t border-slate-200 py-8 mt-12">
-        <div className="max-w-7xl mx-auto px-4 text-center">
-          <p className="text-slate-400 text-sm">
-            © 2026 Archivio Storico Famigliare. Tutti i diritti riservati.
-          </p>
-        </div>
-      </footer>
-    </div>
-  );
+    const mq = window.matchMedia(q);
+    const on = () => setM(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
+  return m;
 };
 
-export default App;
+export default function App() {
+  const { people, loading, error: loadError } = usePeople();
+  const { user, ready, login, logout, refresh, needsVerification } = useAuth();
+  const { theme, toggle: toggleTheme } = useTheme();
+  const { toast, confirm } = useFeedback();
+  const isDesktop = useIsDesktop();
+  const isAdmin = !!user?.isAdmin;
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [lineageOn, setLineageOn] = useState(false);
+  const [query, setQuery] = useState('');
+  const [editing, setEditing] = useState<EditingState | null>(null);
+  const [busy, setBusy] = useState<null | { label: string; progress?: number }>(null);
+  const [directoryOpen, setDirectoryOpen] = useState(() => window.matchMedia('(min-width: 1024px)').matches);
+  const [zoom, setZoom] = useState(1);
+
+  const sheetDrag = useDragControls();
+  const treeRef = useRef<FamilyTreeHandle>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const peopleRef = useRef(people);
+  peopleRef.current = people;
+  const pendingCenter = useRef<string | null>(null);
+
+  const idx = useMemo(() => indexPeople(people), [people]);
+  const layout = useMemo(() => computeLayout(people), [people]);
+  const stats = useMemo(() => computeStats(people, layout.generations), [people, layout.generations]);
+  const selected = selectedId ? idx.get(selectedId) ?? null : null;
+
+  const matchIds = useMemo(
+    () => (query.trim() ? new Set(people.filter((p) => matchesQuery(p, query)).map((p) => p.id)) : null),
+    [people, query],
+  );
+
+  const focusIds = useMemo(() => {
+    if (!lineageOn || !selected) return null;
+    const s = new Set<string>([selected.id, ...ancestorsOf(selected.id, idx), ...descendantsOf(selected.id, people)]);
+    spousesOf(selected, idx, people).forEach((sp) => s.add(sp.id));
+    return s;
+  }, [lineageOn, selected, idx, people]);
+
+  // La persona selezionata è stata eliminata (anche da un'altra sessione).
+  useEffect(() => {
+    if (selectedId && !loading && !idx.has(selectedId)) setSelectedId(null);
+  }, [selectedId, idx, loading]);
+
+  useEffect(() => {
+    if (pendingCenter.current && layout.nodeById.has(pendingCenter.current)) {
+      const id = pendingCenter.current;
+      pendingCenter.current = null;
+      setTimeout(() => treeRef.current?.centerOn(id), 80);
+    }
+  }, [layout]);
+
+  const select = useCallback(
+    (id: string, center = false) => {
+      setSelectedId(id);
+      // Su mobile la scheda copre la parte bassa: centra il nodo nella fascia visibile in alto.
+      if (center || !isDesktop) setTimeout(() => treeRef.current?.centerOn(id, { yRatio: isDesktop ? 0.5 : 0.14 }), 60);
+      if (!isDesktop) setDirectoryOpen(false);
+    },
+    [isDesktop],
+  );
+
+  const closePanel = useCallback(() => {
+    setSelectedId(null);
+    setLineageOn(false);
+  }, []);
+
+  // --- Scorciatoie da tastiera -------------------------------------------------------------
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (isModalOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (el.closest('input, textarea, select, [contenteditable]')) {
+        if (e.key === 'Escape') el.blur();
+        return;
+      }
+      if (e.key === '/') {
+        e.preventDefault();
+        setDirectoryOpen(true);
+        setTimeout(() => searchRef.current?.focus(), 30);
+      } else if (e.key === 'Escape') closePanel();
+      else if (e.key === '+' || e.key === '=') treeRef.current?.zoomIn();
+      else if (e.key === '-') treeRef.current?.zoomOut();
+      else if (e.key === '0') treeRef.current?.fit();
+      else if (e.key === 'n' && isAdmin) setEditing({ draft: { gender: 'male' } });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [closePanel, isAdmin]);
+
+  // --- Azioni ------------------------------------------------------------------------------
+  const handleLogin = async () => {
+    try {
+      await login();
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') toast(describeFirebaseError(e), 'error');
+    }
+  };
+
+  const handleSave = async (draft: PersonDraft) => {
+    try {
+      const isNew = !draft.id;
+      const id = await savePerson(draft, peopleRef.current);
+      if (editing?.parentOf) {
+        const child = peopleRef.current.find((p) => p.id === editing.parentOf);
+        if (child) {
+          const field =
+            draft.gender === 'male' ? 'fatherId' : draft.gender === 'female' ? 'motherId' : !child.fatherId ? 'fatherId' : 'motherId';
+          await savePerson({ ...child, [field]: id }, [...peopleRef.current, { ...(draft as Person), id }]);
+        }
+      }
+      toast(isNew ? `${draft.firstName} è stato aggiunto all’archivio.` : 'Modifiche salvate.');
+      setEditing(null);
+      setSelectedId(id);
+      if (isNew) pendingCenter.current = id;
+    } catch (e) {
+      toast(describeFirebaseError(e), 'error');
+    }
+  };
+
+  const handleDelete = async (person: Person) => {
+    const kids = people.filter((p) => p.fatherId === person.id || p.motherId === person.id).length;
+    const ok = await confirm({
+      title: `Eliminare ${fullName(person)}?`,
+      message: (
+        <>
+          La scheda verrà rimossa definitivamente.
+          {kids > 0 && ` I ${kids} figli resteranno nell’archivio ma senza questo genitore.`}
+        </>
+      ),
+      confirmLabel: 'Elimina',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await deletePerson(person.id, people);
+      setEditing(null);
+      closePanel();
+      toast(`${fullName(person)} è stato rimosso.`);
+    } catch (e) {
+      toast(describeFirebaseError(e), 'error');
+    }
+  };
+
+  const addChild = (p: Person) => {
+    const spouses = spousesOf(p, idx, people);
+    const other = spouses.length === 1 ? spouses[0] : undefined;
+    const draft: PersonDraft = { gender: 'male', spouseIds: [] };
+    if (p.gender === 'female') {
+      draft.motherId = p.id;
+      if (other && other.gender !== 'female') draft.fatherId = other.id;
+    } else {
+      draft.fatherId = p.id;
+      if (other && other.gender !== 'male') draft.motherId = other.id;
+    }
+    draft.lastName = (draft.fatherId ? idx.get(draft.fatherId)?.lastName : p.lastName) ?? '';
+    setEditing({ draft });
+  };
+
+  const addSpouse = (p: Person) =>
+    setEditing({ draft: { gender: p.gender === 'male' ? 'female' : 'male', spouseIds: [p.id] } });
+
+  const addParent = (p: Person) => {
+    const hasFather = !!p.fatherId && idx.has(p.fatherId);
+    const otherParent = hasFather ? p.fatherId : p.motherId && idx.has(p.motherId) ? p.motherId : undefined;
+    setEditing({
+      draft: {
+        gender: hasFather ? 'female' : 'male',
+        lastName: hasFather ? '' : p.lastName,
+        spouseIds: otherParent ? [otherParent] : [],
+      },
+      parentOf: p.id,
+    });
+  };
+
+  const runBusy = async (label: string, fn: () => Promise<void>) => {
+    setBusy({ label });
+    try {
+      await fn();
+    } catch (e) {
+      toast(describeFirebaseError(e), 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const loadDemo = async () => {
+    const ok = await confirm({
+      title: 'Caricare la famiglia d’esempio?',
+      message: 'Verranno aggiunte circa 50 persone su cinque generazioni, utili per provare l’app. Potrai eliminarle in qualsiasi momento.',
+      confirmLabel: 'Carica esempio',
+    });
+    if (!ok) return;
+    await runBusy('Creazione famiglia d’esempio…', async () => {
+      const n = await generateDemo((progress) => setBusy({ label: 'Creazione famiglia d’esempio…', progress }));
+      toast(`Aggiunte ${n} persone d’esempio.`);
+      setTimeout(() => treeRef.current?.fit(), 300);
+    });
+  };
+
+  const clearAll = async () => {
+    const ok = await confirm({
+      title: 'Svuotare l’intero archivio?',
+      message: (
+        <>
+          Verranno eliminate <strong>{people.length} persone</strong>. L’operazione è irreversibile: ti consigliamo di
+          scaricare prima un backup.
+        </>
+      ),
+      confirmLabel: 'Elimina tutto',
+      danger: true,
+    });
+    if (!ok) return;
+    await runBusy('Eliminazione in corso…', async () => {
+      await deleteAll(people);
+      closePanel();
+      toast('Archivio svuotato.');
+    });
+  };
+
+  const stamp = () => new Date().toISOString().slice(0, 10);
+  const exportJson = () => downloadFile(`famtree-${stamp()}.json`, JSON.stringify(buildArchive(people), null, 2), 'application/json');
+  const exportGedcom = () => downloadFile(`famtree-${stamp()}.ged`, toGedcom(people), 'text/plain;charset=utf-8');
+
+  const onImportFile = async (file: File) => {
+    try {
+      const list = parseArchive(await file.text());
+      const existing = list.filter((p) => idx.has(p.id)).length;
+      const ok = await confirm({
+        title: `Importare ${list.length} persone?`,
+        message: existing
+          ? `${existing} schede con lo stesso identificativo verranno sovrascritte.`
+          : 'Le persone verranno aggiunte all’archivio attuale.',
+        confirmLabel: 'Importa',
+      });
+      if (!ok) return;
+      await runBusy('Importazione…', async () => {
+        await importPeople(list);
+        toast(`Importate ${list.length} persone.`);
+        setTimeout(() => treeRef.current?.fit(), 300);
+      });
+    } catch (e) {
+      toast(e instanceof SyntaxError ? 'Il file non è un JSON valido.' : describeFirebaseError(e), 'error');
+    }
+  };
+
+  const onZoomChange = useCallback((k: number) => setZoom(k), []);
+
+  // --- Render -----------------------------------------------------------------------------
+  const archiveMenu = [
+    [
+      { label: 'Scarica backup (JSON)', icon: FileJson, onClick: exportJson, disabled: !people.length },
+      { label: 'Esporta GEDCOM', icon: Download, onClick: exportGedcom, disabled: !people.length, hint: '.ged' },
+    ],
+    isAdmin
+      ? [
+          { label: 'Importa backup…', icon: Upload, onClick: () => fileRef.current?.click() },
+          { label: 'Carica famiglia d’esempio', icon: Database, onClick: loadDemo },
+        ]
+      : [],
+    isAdmin ? [{ label: 'Svuota archivio', icon: Trash2, onClick: clearAll, danger: true, disabled: !people.length }] : [],
+  ];
+
+  const panel = selected && (
+    <PersonPanel
+      key={selected.id}
+      person={selected}
+      people={people}
+      idx={idx}
+      isAdmin={isAdmin}
+      lineageOn={lineageOn}
+      onToggleLineage={() => setLineageOn((v) => !v)}
+      onSelect={(id) => select(id, true)}
+      onCenter={() => treeRef.current?.centerOn(selected.id, { yRatio: isDesktop ? 0.5 : 0.14 })}
+      onClose={closePanel}
+      onEdit={() => setEditing({ draft: { ...selected } })}
+      onAddChild={() => addChild(selected)}
+      onAddSpouse={() => addSpouse(selected)}
+      onAddParent={() => addParent(selected)}
+    />
+  );
+
+  return (
+    <div className="flex h-dvh flex-col overflow-hidden bg-paper text-ink">
+      {/* Header */}
+      <header className="relative z-40 flex h-16 shrink-0 items-center gap-2 border-b border-line bg-surface/85 px-3 backdrop-blur-xl sm:px-4">
+        <IconButton
+          label={directoryOpen ? 'Nascondi elenco' : 'Mostra elenco'}
+          onClick={() => setDirectoryOpen((o) => !o)}
+          aria-pressed={directoryOpen}
+        >
+          {isDesktop ? (
+            directoryOpen ? <PanelLeftClose className="h-5 w-5" /> : <PanelLeftOpen className="h-5 w-5" />
+          ) : (
+            <BookUser className="h-5 w-5" />
+          )}
+        </IconButton>
+
+        <div className="flex min-w-0 items-center gap-3">
+          <img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" className="h-9 w-9 rounded-xl shadow-card" />
+          <div className="min-w-0 leading-tight">
+            <h1 className="font-serif text-xl font-semibold tracking-tight">{APP_NAME}</h1>
+            <p className="hidden text-[11px] uppercase tracking-[0.18em] text-ink-3 sm:block">{APP_TAGLINE}</p>
+          </div>
+        </div>
+
+        <div className="flex-1" />
+
+        {busy && (
+          <div className="hidden items-center gap-2 rounded-full bg-brand-soft px-3 py-1.5 text-xs font-medium text-brand md:flex">
+            <Spinner className="h-3.5 w-3.5" />
+            {busy.label}
+            {busy.progress ? ` ${busy.progress}` : ''}
+          </div>
+        )}
+
+        <IconButton label={theme === 'dark' ? 'Tema chiaro' : 'Tema scuro'} onClick={toggleTheme}>
+          {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+        </IconButton>
+
+        <Menu
+          sections={archiveMenu}
+          trigger={(t) => (
+            <IconButton label="Archivio" {...t}>
+              <MoreHorizontal className="h-5 w-5" />
+            </IconButton>
+          )}
+        />
+
+        {isAdmin && (
+          <Button variant="primary" onClick={() => setEditing({ draft: { gender: 'male' } })} className="px-3 sm:px-4">
+            <Plus className="h-4 w-4" />
+            <span className="hidden sm:inline">Nuova persona</span>
+          </Button>
+        )}
+
+        {!ready ? null : user ? (
+          <Menu
+            header={
+              <div className="flex items-center gap-3 px-3 py-2.5 mb-1.5 border-b border-line">
+                {user.photoURL ? (
+                  <img src={user.photoURL} alt="" referrerPolicy="no-referrer" className="h-9 w-9 rounded-full" />
+                ) : (
+                  <div className="h-9 w-9 rounded-full bg-brand-soft" />
+                )}
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{user.displayName ?? user.email}</p>
+                  <p className="flex items-center gap-1 text-xs text-ink-3">
+                    {isAdmin ? <ShieldCheck className="h-3.5 w-3.5 text-brand" /> : <Users className="h-3.5 w-3.5" />}
+                    {isAdmin ? 'Amministratore' : 'Ospite · sola lettura'}
+                  </p>
+                </div>
+              </div>
+            }
+            sections={[[{ label: 'Esci', icon: LogOut, onClick: () => logout().then(() => toast('Disconnesso.', 'info')) }]]}
+            trigger={(t) => (
+              <button {...t} aria-label="Account" className="ml-1 rounded-full ring-2 ring-transparent transition hover:ring-line-2">
+                {user.photoURL ? (
+                  <img src={user.photoURL} alt="" referrerPolicy="no-referrer" className="h-9 w-9 rounded-full" />
+                ) : (
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-soft text-sm font-semibold text-brand">
+                    {(user.displayName ?? user.email)[0]?.toUpperCase()}
+                  </span>
+                )}
+              </button>
+            )}
+          />
+        ) : (
+          <Button onClick={handleLogin} className="ml-1">
+            <LogIn className="h-4 w-4" />
+            <span className="hidden sm:inline">Accedi</span>
+          </Button>
+        )}
+      </header>
+
+      {needsVerification && (
+        <div className="flex items-center gap-3 border-b border-line bg-brass/10 px-4 py-2 text-sm text-ink">
+          <ShieldAlert className="h-4 w-4 shrink-0 text-brass" />
+          <span className="flex-1">Verifica l’indirizzo email del tuo account per abilitare le modifiche.</span>
+          <Button size="sm" onClick={() => refresh().then(() => toast('Stato aggiornato.', 'info'))}>
+            <RefreshCw className="h-3.5 w-3.5" /> Ricontrolla
+          </Button>
+        </div>
+      )}
+
+      <div className="relative flex min-h-0 flex-1">
+        {/* Elenco persone */}
+        <AnimatePresence initial={false}>
+          {directoryOpen && (
+            <>
+              {!isDesktop && (
+                <motion.div
+                  className="fixed inset-0 top-16 z-30 bg-black/30"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  onClick={() => setDirectoryOpen(false)}
+                />
+              )}
+              <motion.aside
+                key="directory"
+                initial={isDesktop ? { width: 0, opacity: 0 } : { x: '-100%' }}
+                animate={isDesktop ? { width: 320, opacity: 1 } : { x: 0 }}
+                exit={isDesktop ? { width: 0, opacity: 0 } : { x: '-100%' }}
+                transition={{ type: 'spring', damping: 32, stiffness: 320 }}
+                className={cn(
+                  'z-30 shrink-0 overflow-hidden border-r border-line bg-paper-2',
+                  isDesktop ? 'relative' : 'fixed bottom-0 left-0 top-16 w-[min(88vw,340px)] shadow-float',
+                )}
+              >
+                <div className="h-full w-full lg:w-[320px]">
+                  <Directory
+                    people={people}
+                    query={query}
+                    onQuery={setQuery}
+                    selectedId={selectedId}
+                    onSelect={(id) => select(id, true)}
+                    stats={stats}
+                    searchRef={searchRef}
+                  />
+                </div>
+              </motion.aside>
+            </>
+          )}
+        </AnimatePresence>
+
+        {/* Canvas */}
+        <main className="canvas-grid relative min-w-0 flex-1">
+          {loading ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-ink-3">
+              <Spinner className="h-7 w-7 text-brand" />
+              <p className="text-sm">Apertura dell’archivio…</p>
+            </div>
+          ) : loadError ? (
+            <div className="absolute inset-0 flex items-center justify-center p-6">
+              <div className="max-w-md rounded-3xl border border-line bg-surface p-8 text-center shadow-card">
+                <ShieldAlert className="mx-auto h-10 w-10 text-danger" />
+                <h2 className="mt-4 font-serif text-2xl font-semibold">Archivio non raggiungibile</h2>
+                <p className="mt-2 text-sm text-ink-2">{loadError}</p>
+                <Button className="mt-6" onClick={() => location.reload()}>
+                  <RefreshCw className="h-4 w-4" /> Riprova
+                </Button>
+              </div>
+            </div>
+          ) : people.length === 0 ? (
+            <EmptyState isAdmin={isAdmin} signedIn={!!user} onAdd={() => setEditing({ draft: { gender: 'male' } })} onDemo={loadDemo} onLogin={handleLogin} />
+          ) : (
+            <>
+              <FamilyTree
+                ref={treeRef}
+                layout={layout}
+                selectedId={selectedId}
+                focusIds={focusIds}
+                matchIds={matchIds}
+                onSelect={(id) => select(id)}
+                onBackgroundClick={closePanel}
+                onZoomChange={onZoomChange}
+              />
+
+              {matchIds && (
+                <div className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 rounded-full border border-line bg-surface/90 px-4 py-1.5 text-xs font-medium text-ink-2 shadow-card backdrop-blur">
+                  {matchIds.size === 0 ? 'Nessuna corrispondenza' : `${matchIds.size} ${matchIds.size === 1 ? 'corrispondenza' : 'corrispondenze'} evidenziate`}
+                </div>
+              )}
+
+              {/* Controlli zoom */}
+              <div
+                className={cn(
+                  'absolute right-4 flex flex-col overflow-hidden rounded-2xl border border-line bg-surface/90 shadow-card backdrop-blur transition-all',
+                  selected && !isDesktop ? 'bottom-[calc(72dvh+1rem)]' : 'bottom-4',
+                )}
+              >
+                <IconButton label="Ingrandisci (+)" onClick={() => treeRef.current?.zoomIn()} className="rounded-none">
+                  <Plus className="h-4 w-4" />
+                </IconButton>
+                <div className="border-y border-line py-1 text-center text-[10px] font-medium tabular-nums text-ink-3">
+                  {Math.round(zoom * 100)}%
+                </div>
+                <IconButton label="Riduci (−)" onClick={() => treeRef.current?.zoomOut()} className="rounded-none">
+                  <Minus className="h-4 w-4" />
+                </IconButton>
+                <IconButton label="Adatta alla finestra (0)" onClick={() => treeRef.current?.fit()} className="rounded-none border-t border-line">
+                  <Maximize2 className="h-4 w-4" />
+                </IconButton>
+              </div>
+
+              {/* Legenda */}
+              <div className="pointer-events-none absolute bottom-4 left-4 hidden items-center gap-4 rounded-full border border-line bg-surface/90 px-4 py-2 text-[11px] text-ink-2 shadow-card backdrop-blur md:flex">
+                <span className="flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-male" />Uomo</span>
+                <span className="flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-female" />Donna</span>
+                <span className="flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-other" />Altro</span>
+                <span className="flex items-center gap-1.5 text-brass">♥ Coppia</span>
+                <span className="hidden items-center gap-1 xl:flex">
+                  <Kbd>/</Kbd> cerca <Kbd>0</Kbd> adatta
+                </span>
+              </div>
+            </>
+          )}
+        </main>
+
+        {/* Scheda persona */}
+        <AnimatePresence>
+          {selected &&
+            (isDesktop ? (
+              <motion.aside
+                key="panel"
+                initial={{ width: 0, opacity: 0 }}
+                animate={{ width: 400, opacity: 1 }}
+                exit={{ width: 0, opacity: 0 }}
+                transition={{ type: 'spring', damping: 34, stiffness: 340 }}
+                className="relative z-20 shrink-0 overflow-hidden border-l border-line bg-surface"
+              >
+                <div className="h-full w-[400px]">{panel}</div>
+              </motion.aside>
+            ) : (
+              <motion.aside
+                key="sheet"
+                initial={{ y: '100%' }}
+                animate={{ y: 0 }}
+                exit={{ y: '100%' }}
+                transition={{ type: 'spring', damping: 32, stiffness: 320 }}
+                drag="y"
+                dragControls={sheetDrag}
+                dragListener={false}
+                dragConstraints={{ top: 0, bottom: 0 }}
+                dragElastic={{ top: 0, bottom: 0.6 }}
+                onDragEnd={(_, info) => info.offset.y > 120 && closePanel()}
+                className="fixed inset-x-0 bottom-0 z-50 h-[72dvh] overflow-hidden rounded-t-3xl border-t border-line bg-surface shadow-float"
+              >
+                <div
+                  className="flex h-5 cursor-grab touch-none items-center justify-center"
+                  onPointerDown={(e) => sheetDrag.start(e)}
+                  aria-hidden
+                >
+                  <div className="h-1.5 w-10 rounded-full bg-line-2" />
+                </div>
+                <div className="h-[calc(100%-20px)]">{panel}</div>
+              </motion.aside>
+            ))}
+        </AnimatePresence>
+      </div>
+
+      <PersonForm
+        open={!!editing}
+        draft={editing?.draft ?? null}
+        people={people}
+        onSave={handleSave}
+        onCancel={() => setEditing(null)}
+        onDelete={isAdmin ? handleDelete : undefined}
+      />
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept="application/json,.json"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = '';
+          if (f) onImportFile(f);
+        }}
+      />
+    </div>
+  );
+}
+
+function EmptyState({
+  isAdmin,
+  signedIn,
+  onAdd,
+  onDemo,
+  onLogin,
+}: {
+  isAdmin: boolean;
+  signedIn: boolean;
+  onAdd: () => void;
+  onDemo: () => void;
+  onLogin: () => void;
+}) {
+  return (
+    <div className="absolute inset-0 flex items-center justify-center p-6">
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="max-w-lg text-center"
+      >
+        <svg viewBox="0 0 200 140" className="mx-auto h-36 w-auto" aria-hidden>
+          <g fill="none" strokeLinecap="round" style={{ stroke: 'var(--link)' }} strokeWidth="1.5">
+            <path d="M100 52v22M60 74h80M60 74v16M140 74v16M100 74v16" />
+          </g>
+          {[
+            [100, 36, 'var(--brand)'],
+            [60, 104, 'var(--male)'],
+            [100, 104, 'var(--female)'],
+            [140, 104, 'var(--other)'],
+          ].map(([x, y, c]) => (
+            <g key={`${x}-${y}`}>
+              <circle cx={x as number} cy={y as number} r="15" style={{ fill: 'var(--surface)', stroke: c as string }} strokeWidth="2" />
+              <circle cx={x as number} cy={(y as number) - 3} r="4.5" style={{ fill: c as string, opacity: 0.6 }} />
+              <path d={`M${(x as number) - 7} ${(y as number) + 9} q7 -9 14 0`} style={{ stroke: c as string, opacity: 0.6 }} strokeWidth="2" fill="none" />
+            </g>
+          ))}
+        </svg>
+        <h2 className="mt-4 font-serif text-3xl font-semibold text-ink">Ogni famiglia ha una storia</h2>
+        <p className="mx-auto mt-3 max-w-md text-ink-2">
+          {isAdmin
+            ? 'Inizia aggiungendo una persona — magari te stesso o il capostipite — oppure carica una famiglia d’esempio per esplorare l’app.'
+            : signedIn
+              ? 'L’archivio è ancora vuoto. Solo l’amministratore può aggiungere persone.'
+              : 'L’archivio è ancora vuoto. Accedi come amministratore per iniziare a costruire l’albero.'}
+        </p>
+        <div className="mt-7 flex flex-wrap justify-center gap-3">
+          {isAdmin ? (
+            <>
+              <Button variant="primary" size="lg" onClick={onAdd}>
+                <Plus className="h-4 w-4" /> Aggiungi la prima persona
+              </Button>
+              <Button size="lg" onClick={onDemo}>
+                <Database className="h-4 w-4" /> Famiglia d’esempio
+              </Button>
+            </>
+          ) : (
+            !signedIn && (
+              <Button variant="primary" size="lg" onClick={onLogin}>
+                <LogIn className="h-4 w-4" /> Accedi con Google
+              </Button>
+            )
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+}

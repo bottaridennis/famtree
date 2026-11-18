@@ -6,27 +6,42 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Helper Functions
     function isAuthenticated() {
       return request.auth != null;
     }
 
+    // Tenere allineato con ADMIN_EMAILS in src/config.ts
     function isAdmin() {
       return isAuthenticated() &&
-        (request.auth.token.email == "dennisbottari@gmail.com" && request.auth.token.email_verified == true);
+        request.auth.token.email == "dennisbottari@gmail.com" &&
+        request.auth.token.email_verified == true;
+    }
+
+    function optString(data, field, max) {
+      return !(field in data) || (data[field] is string && data[field].size() <= max);
     }
 
     function isValidPerson(data) {
-      return data.firstName is string && data.firstName.size() > 0 && data.firstName.size() <= 100 &&
+      return data.keys().hasOnly([
+               'firstName', 'lastName', 'nickname', 'gender',
+               'birthDate', 'birthPlace', 'deathDate', 'deathPlace', 'deceased',
+               'occupation', 'fatherId', 'motherId', 'spouseIds', 'bio', 'photoUrl'
+             ]) &&
+             data.firstName is string && data.firstName.size() > 0 && data.firstName.size() <= 100 &&
              data.lastName is string && data.lastName.size() > 0 && data.lastName.size() <= 100 &&
              data.gender in ['male', 'female', 'other'] &&
-             (!('birthDate' in data) || (data.birthDate is string && data.birthDate.size() <= 20)) &&
-             (!('deathDate' in data) || (data.deathDate is string && data.deathDate.size() <= 20)) &&
-             (!('fatherId' in data) || (data.fatherId is string && data.fatherId.size() <= 128)) &&
-             (!('motherId' in data) || (data.motherId is string && data.motherId.size() <= 128)) &&
-             (!('spouseIds' in data) || data.spouseIds is list) &&
-             (!('bio' in data) || (data.bio is string && data.bio.size() <= 2000)) &&
-             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500));
+             optString(data, 'nickname', 100) &&
+             optString(data, 'birthDate', 20) &&
+             optString(data, 'birthPlace', 200) &&
+             optString(data, 'deathDate', 20) &&
+             optString(data, 'deathPlace', 200) &&
+             optString(data, 'occupation', 200) &&
+             optString(data, 'fatherId', 128) &&
+             optString(data, 'motherId', 128) &&
+             optString(data, 'bio', 2000) &&
+             optString(data, 'photoUrl', 500) &&
+             (!('deceased' in data) || data.deceased is bool) &&
+             (!('spouseIds' in data) || (data.spouseIds is list && data.spouseIds.size() <= 20));
     }
 
     match /users/{userId} {
@@ -34,17 +49,12 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    match /test/connection {
-      allow read: if true;
-    }
-
     match /people/{personId} {
-      // Broad read access for the genealogy tree
+      // Lettura pubblica dell'albero
       allow read: if true;
-      
-      // Admin only write access with validation
-      allow create: if isAdmin() && isValidPerson(request.resource.data);
-      allow update: if isAdmin() && isValidPerson(request.resource.data);
+
+      // Scrittura solo per l'amministratore, con validazione dello schema
+      allow create, update: if isAdmin() && isValidPerson(request.resource.data);
       allow delete: if isAdmin();
     }
   }

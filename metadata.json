@@ -1,0 +1,5 @@
+{
+  "name": "Albero Genealogico",
+  "description": "Applicazione per la gestione e visualizzazione di un albero genealogico con area admin.",
+  "requestFramePermissions": []
+}

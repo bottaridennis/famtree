@@ -1,0 +1,28 @@
+{
+  "entities": {
+    "Person": {
+      "title": "Person",
+      "description": "An individual in the family tree.",
+      "type": "object",
+      "properties": {
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "birthDate": { "type": "string", "format": "date" },
+        "deathDate": { "type": "string", "format": "date" },
+        "gender": { "type": "string", "enum": ["male", "female", "other"] },
+        "fatherId": { "type": "string", "description": "ID of the father" },
+        "motherId": { "type": "string", "description": "ID of the mother" },
+        "spouseIds": { "type": "array", "items": { "type": "string" }, "description": "IDs of spouses" },
+        "bio": { "type": "string" },
+        "photoUrl": { "type": "string" }
+      },
+      "required": ["firstName", "lastName", "gender"]
+    }
+  },
+  "firestore": {
+    "people": {
+      "schema": "Person",
+      "description": "Collection of people in the genealogy tree."
+    }
+  }
+}

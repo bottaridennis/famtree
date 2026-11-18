@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Configurazione Firebase: mai nel repository (vedi README)
+firebase-applet-config.json
+.firebaserc
+.firebase/

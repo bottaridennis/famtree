@@ -1,281 +1,380 @@
-import React, { useState } from 'react';
-import { Person, Gender } from '../types';
-import { X, Save, Trash2, UserPlus, Calendar, BookOpen, Heart, Users, Camera, Info } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Heart, Plus, Trash2, X } from 'lucide-react';
+import type { Gender, Person, PersonDraft } from '../types';
+import { Avatar, Button, Field, IconButton, inputClass, Modal, ModalHeader, Spinner } from './ui';
+import { cn } from '../utils';
+import { descendantsOf, fullName, indexPeople, isDeceased, yearOf } from '../lib/family';
+import { useFeedback } from './feedback';
 
-interface PersonFormProps {
-  person?: Partial<Person>;
+interface Props {
+  open: boolean;
+  draft: PersonDraft | null;
   people: Person[];
-  onSave: (person: Partial<Person>) => void;
+  onSave: (draft: PersonDraft) => Promise<void>;
   onCancel: () => void;
-  onDelete?: (id: string) => void;
+  onDelete?: (person: Person) => void;
 }
 
-const PersonForm: React.FC<PersonFormProps> = ({ person, people, onSave, onCancel, onDelete }) => {
-  const [formData, setFormData] = useState<Partial<Person>>({
-    firstName: '',
-    lastName: '',
-    gender: 'male',
-    spouseIds: [],
-    birthDate: '',
-    deathDate: '',
-    bio: '',
-    photoUrl: '',
-    ...person
+/** Converte "1950", "03/1950", "12/03/1950" o ISO in ISO (YYYY, YYYY-MM, YYYY-MM-DD). */
+export function parseFlexibleDate(input: string): string | null {
+  const s = input.trim();
+  if (!s) return '';
+  let m = s.match(/^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?$/);
+  let y: number, mo: number | undefined, d: number | undefined;
+  if (m) [y, mo, d] = [+m[1], m[2] ? +m[2] : undefined, m[3] ? +m[3] : undefined];
+  else if ((m = s.match(/^(\d{1,2})[/.\-](\d{4})$/))) [y, mo] = [+m[2], +m[1]];
+  else if ((m = s.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})$/))) [y, mo, d] = [+m[3], +m[2], +m[1]];
+  else return null;
+  if (y < 1000 || y > 2100) return null;
+  if (mo !== undefined && (mo < 1 || mo > 12)) return null;
+  if (d !== undefined) {
+    const max = new Date(y, mo!, 0).getDate();
+    if (d < 1 || d > max) return null;
+  }
+  return [String(y), mo && String(mo).padStart(2, '0'), d && String(d).padStart(2, '0')].filter(Boolean).join('-');
+}
+
+const isoToDisplay = (iso?: string) => {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-');
+  return [d, m, y].filter(Boolean).join('/');
+};
+
+function DateInput({
+  id,
+  value,
+  onChange,
+  invalid,
+}: {
+  id: string;
+  value?: string;
+  onChange: (iso: string | null) => void;
+  invalid?: boolean;
+}) {
+  const [text, setText] = useState(isoToDisplay(value));
+  useEffect(() => setText(isoToDisplay(value)), [value]);
+  return (
+    <input
+      id={id}
+      inputMode="numeric"
+      placeholder="gg/mm/aaaa o solo anno"
+      value={text}
+      aria-invalid={invalid}
+      onChange={(e) => {
+        setText(e.target.value);
+        onChange(parseFlexibleDate(e.target.value));
+      }}
+      onBlur={() => {
+        const iso = parseFlexibleDate(text);
+        if (iso !== null) setText(isoToDisplay(iso));
+      }}
+      className={inputClass}
+    />
+  );
+}
+
+const genders: { value: Gender; label: string }[] = [
+  { value: 'male', label: 'Uomo' },
+  { value: 'female', label: 'Donna' },
+  { value: 'other', label: 'Altro' },
+];
+
+type DateErrors = Partial<Record<'birthDate' | 'deathDate', boolean>>;
+
+export default function PersonForm({ open, draft, people, onSave, onCancel, onDelete }: Props) {
+  const [form, setForm] = useState<PersonDraft>({});
+  const [dateErrors, setDateErrors] = useState<DateErrors>({});
+  const [submitted, setSubmitted] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [spouseToAdd, setSpouseToAdd] = useState('');
+  const { confirm } = useFeedback();
+
+  useEffect(() => {
+    if (!draft) return;
+    setForm({ gender: 'male', spouseIds: [], ...draft });
+    setDateErrors({});
+    setSubmitted(false);
+    setSaving(false);
+    setSpouseToAdd('');
+  }, [draft]);
+
+  const idx = useMemo(() => indexPeople(people), [people]);
+  const set = <K extends keyof PersonDraft>(key: K, value: PersonDraft[K]) => setForm((f) => ({ ...f, [key]: value }));
+  const deceased = isDeceased(form);
+  const existing = form.id ? idx.get(form.id) : undefined;
+
+  // Non si può scegliere come genitore se stessi o un proprio discendente (eviterebbe cicli).
+  const forbiddenParents = useMemo(() => {
+    if (!form.id) return new Set<string>();
+    const s = descendantsOf(form.id, people);
+    s.add(form.id);
+    return s;
+  }, [form.id, people]);
+
+  const sorted = useMemo(
+    () => [...people].sort((a, b) => a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName)),
+    [people],
+  );
+  const optionLabel = (p: Person) => `${p.lastName} ${p.firstName}${p.birthDate ? ` (${yearOf(p.birthDate)})` : ''}`;
+  const parentOptions = (g: Gender) =>
+    sorted.filter((p) => !forbiddenParents.has(p.id) && (p.gender === g || p.gender === 'other'));
+  const spouseOptions = sorted.filter((p) => p.id !== form.id && !form.spouseIds?.includes(p.id));
+
+  const errors: Record<string, string | undefined> = {
+    firstName: !form.firstName?.trim() ? 'Il nome è obbligatorio.' : form.firstName.length > 100 ? 'Massimo 100 caratteri.' : undefined,
+    lastName: !form.lastName?.trim() ? 'Il cognome è obbligatorio.' : form.lastName.length > 100 ? 'Massimo 100 caratteri.' : undefined,
+    birthDate: dateErrors.birthDate ? 'Data non valida.' : undefined,
+    deathDate: dateErrors.deathDate
+      ? 'Data non valida.'
+      : deceased && form.birthDate && form.deathDate && form.deathDate < form.birthDate
+        ? 'La morte non può precedere la nascita.'
+        : undefined,
+    photoUrl:
+      form.photoUrl && !/^https?:\/\/\S+$/i.test(form.photoUrl.trim())
+        ? 'Inserisci un indirizzo che inizi con https://'
+        : (form.photoUrl?.length ?? 0) > 500
+          ? 'Indirizzo troppo lungo (max 500).'
+          : undefined,
+    bio: (form.bio?.length ?? 0) > 2000 ? 'Massimo 2000 caratteri.' : undefined,
+  };
+  const hasErrors = Object.values(errors).some(Boolean);
+  const show = (k: string) => (submitted ? errors[k] : k === 'firstName' || k === 'lastName' ? undefined : errors[k]);
+
+  const warnings: string[] = [];
+  const father = form.fatherId ? idx.get(form.fatherId) : undefined;
+  const mother = form.motherId ? idx.get(form.motherId) : undefined;
+  [father, mother].forEach((par) => {
+    if (par?.birthDate && form.birthDate && par.birthDate >= form.birthDate)
+      warnings.push(`${fullName(par)} risulta nato/a dopo questa persona.`);
   });
 
-  const [isDeceased, setIsDeceased] = useState(!!formData.deathDate);
+  const isDirty = useMemo(
+    () => Object.values(dateErrors).some(Boolean) || JSON.stringify({ gender: 'male', spouseIds: [], ...draft }) !== JSON.stringify(form),
+    [draft, form, dateErrors],
+  );
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const dataToSave = { ...formData };
-    if (!isDeceased) {
-      delete dataToSave.deathDate;
-    }
-    onSave(dataToSave);
+  const requestClose = async () => {
+    if (saving) return;
+    if (isDirty && !(await confirm({ title: 'Scartare le modifiche?', message: 'Le modifiche non salvate andranno perse.', confirmLabel: 'Scarta', danger: true })))
+      return;
+    onCancel();
   };
 
-  const otherPeople = people.filter(p => p.id !== formData.id);
+  const submit = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    setSubmitted(true);
+    if (hasErrors) return;
+    setSaving(true);
+    try {
+      await onSave(form);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const title = form.id ? `Modifica ${existing ? existing.firstName : 'persona'}` : 'Nuova persona';
 
   return (
-    <div className="bg-[#fdfcf9] p-0 rounded-[2.5rem] border border-slate-200 shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-      {/* Header */}
-      <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-white/50 backdrop-blur-sm sticky top-0 z-10">
-        <div className="flex items-center gap-4">
-          <div className="bg-[#5a5a40] p-3 rounded-2xl shadow-lg shadow-[#5a5a40]/20">
-            <UserPlus className="w-6 h-6 text-white" />
+    <Modal open={open} onClose={requestClose} className="sm:max-w-2xl" labelledBy="person-form-title">
+      <ModalHeader
+        id="person-form-title"
+        title={title}
+        subtitle={form.id ? 'Aggiorna dati, legami e ricordi.' : 'Aggiungi un nuovo ramo all’archivio.'}
+        onClose={requestClose}
+      />
+      <form id="person-form" onSubmit={submit} className="flex-1 overflow-y-auto scrollbar-thin px-6 py-6 space-y-8" noValidate>
+        {/* Identità */}
+        <section className="grid gap-5 sm:grid-cols-[auto_1fr]">
+          <div className="flex sm:flex-col items-center gap-3">
+            <Avatar
+              person={{
+                firstName: form.firstName || '?',
+                lastName: form.lastName || '',
+                gender: form.gender ?? 'other',
+                photoUrl: errors.photoUrl ? undefined : form.photoUrl,
+                deathDate: form.deathDate,
+                deceased: form.deceased,
+              }}
+              size={96}
+              rounded="xl"
+            />
           </div>
-          <div>
-            <h3 className="text-2xl font-bold text-slate-900 serif leading-tight">
-              {formData.id ? 'Modifica Membro' : 'Aggiungi alla Stirpe'}
-            </h3>
-            <p className="text-xs text-slate-500 font-medium uppercase tracking-widest mt-0.5">
-              {formData.id ? 'Aggiorna i dettagli della persona' : 'Inserisci un nuovo ramo familiare'}
-            </p>
-          </div>
-        </div>
-        <button 
-          onClick={onCancel} 
-          className="p-2.5 hover:bg-slate-100 rounded-full transition-all active:scale-90 group"
-        >
-          <X className="w-5 h-5 text-slate-400 group-hover:text-slate-600" />
-        </button>
-      </div>
-
-      <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8 space-y-10 custom-scrollbar">
-        {/* Profile & Identity Section */}
-        <section className="space-y-6">
-          <div className="flex items-start gap-8">
-            {/* Avatar Placeholder */}
-            <div className="relative group">
-              <div className="w-32 h-32 rounded-[2rem] bg-slate-100 border-2 border-dashed border-slate-200 flex flex-col items-center justify-center gap-2 overflow-hidden transition-all group-hover:border-[#5a5a40]/40 group-hover:bg-slate-50">
-                {formData.photoUrl ? (
-                  <img src={formData.photoUrl} alt="Preview" className="w-full h-full object-cover" />
-                ) : (
-                  <>
-                    <Camera className="w-8 h-8 text-slate-300" />
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Foto URL</span>
-                  </>
-                )}
-              </div>
-              <input 
-                type="text"
-                placeholder="https://..."
-                value={formData.photoUrl || ''}
-                onChange={e => setFormData({ ...formData, photoUrl: e.target.value })}
-                className="absolute -bottom-2 -right-2 w-40 p-2 text-[10px] bg-white border border-slate-200 rounded-lg shadow-sm focus:ring-2 focus:ring-[#5a5a40]/20 outline-none opacity-0 group-hover:opacity-100 transition-opacity"
-              />
-            </div>
-
-            <div className="flex-1 space-y-6">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Nome</label>
-                  <input
-                    required
-                    type="text"
-                    placeholder="es. Giovanni"
-                    value={formData.firstName}
-                    onChange={e => setFormData({ ...formData, firstName: e.target.value })}
-                    className="w-full p-3.5 bg-white border border-slate-200 rounded-2xl focus:ring-4 focus:ring-[#5a5a40]/5 focus:border-[#5a5a40] outline-none transition-all text-slate-900 font-medium"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Cognome</label>
-                  <input
-                    required
-                    type="text"
-                    placeholder="es. Rossi"
-                    value={formData.lastName}
-                    onChange={e => setFormData({ ...formData, lastName: e.target.value })}
-                    className="w-full p-3.5 bg-white border border-slate-200 rounded-2xl focus:ring-4 focus:ring-[#5a5a40]/5 focus:border-[#5a5a40] outline-none transition-all text-slate-900 font-medium"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Genere</label>
-                <div className="flex gap-2 p-1.5 bg-slate-100/50 rounded-2xl">
-                  {(['male', 'female', 'other'] as Gender[]).map(g => (
-                    <button
-                      key={g}
-                      type="button"
-                      onClick={() => setFormData({ ...formData, gender: g })}
-                      className={`flex-1 py-2.5 rounded-xl text-xs font-bold capitalize transition-all flex items-center justify-center gap-2 ${
-                        formData.gender === g 
-                          ? 'bg-white shadow-md text-[#5a5a40]' 
-                          : 'text-slate-400 hover:text-slate-600'
-                      }`}
-                    >
-                      {g === 'male' ? 'Uomo' : g === 'female' ? 'Donna' : 'Altro'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Timeline Section */}
-        <section className="space-y-6 bg-slate-50/50 p-6 rounded-[2rem] border border-slate-100">
-          <div className="flex justify-between items-center">
-            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-[#5a5a40]" /> Cronologia di Vita
-            </h4>
-            <label className="flex items-center gap-2 cursor-pointer group">
-              <span className="text-[10px] font-bold text-slate-400 uppercase group-hover:text-slate-600 transition-colors">Defunto</span>
-              <div 
-                onClick={() => setIsDeceased(!isDeceased)}
-                className={`w-10 h-5 rounded-full transition-all relative ${isDeceased ? 'bg-rose-400' : 'bg-slate-200'}`}
-              >
-                <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${isDeceased ? 'left-6' : 'left-1'}`} />
-              </div>
-            </label>
-          </div>
-
-          <div className="grid grid-cols-2 gap-6">
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-500 ml-1">Data di Nascita</label>
-              <div className="relative">
-                <input
-                  type="date"
-                  value={formData.birthDate || ''}
-                  onChange={e => setFormData({ ...formData, birthDate: e.target.value })}
-                  className="w-full p-3.5 bg-white border border-slate-200 rounded-2xl focus:ring-4 focus:ring-[#5a5a40]/5 focus:border-[#5a5a40] outline-none transition-all text-slate-900"
-                />
-              </div>
-            </div>
-            {isDeceased && (
-              <div className="space-y-1.5 animate-in fade-in slide-in-from-top-2 duration-300">
-                <label className="text-xs font-bold text-slate-500 ml-1">Data di Decesso</label>
-                <input
-                  type="date"
-                  value={formData.deathDate || ''}
-                  onChange={e => setFormData({ ...formData, deathDate: e.target.value })}
-                  className="w-full p-3.5 bg-white border border-slate-200 rounded-2xl focus:ring-4 focus:ring-rose-500/5 focus:border-rose-400 outline-none transition-all text-slate-900"
-                />
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* Lineage Section */}
-        <section className="space-y-6">
-          <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
-            <Users className="w-4 h-4 text-[#5a5a40]" /> Legami e Discendenza
-          </h4>
-          <div className="grid grid-cols-2 gap-6">
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-500 ml-1">Padre</label>
-              <select
-                value={formData.fatherId || ''}
-                onChange={e => setFormData({ ...formData, fatherId: e.target.value || undefined })}
-                className="w-full p-3.5 bg-white border border-slate-200 rounded-2xl focus:ring-4 focus:ring-[#5a5a40]/5 focus:border-[#5a5a40] outline-none transition-all text-slate-900 appearance-none cursor-pointer"
-              >
-                <option value="">Nessuno</option>
-                {otherPeople.filter(p => p.gender === 'male').map(p => (
-                  <option key={p.id} value={p.id}>{p.firstName} {p.lastName}</option>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Nome *" htmlFor="f-first" error={show('firstName')}>
+              <input id="f-first" autoFocus className={inputClass} value={form.firstName ?? ''} aria-invalid={!!show('firstName')} onChange={(e) => set('firstName', e.target.value)} placeholder="es. Giovanni" autoComplete="off" />
+            </Field>
+            <Field label="Cognome *" htmlFor="f-last" error={show('lastName')}>
+              <input id="f-last" className={inputClass} value={form.lastName ?? ''} aria-invalid={!!show('lastName')} onChange={(e) => set('lastName', e.target.value)} placeholder="es. Rossi" autoComplete="off" />
+            </Field>
+            <Field label="Soprannome" htmlFor="f-nick">
+              <input id="f-nick" className={inputClass} value={form.nickname ?? ''} onChange={(e) => set('nickname', e.target.value)} placeholder="es. Nonno Nino" maxLength={100} />
+            </Field>
+            <Field label="Genere">
+              <div role="radiogroup" className="grid grid-cols-3 gap-1 rounded-xl bg-surface-2 border border-line p-1 h-11">
+                {genders.map((g) => (
+                  <button
+                    key={g.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={form.gender === g.value}
+                    onClick={() => set('gender', g.value)}
+                    className={cn(
+                      'rounded-lg text-sm font-medium transition-all',
+                      form.gender === g.value ? 'bg-surface text-ink shadow-card' : 'text-ink-3 hover:text-ink',
+                    )}
+                  >
+                    {g.label}
+                  </button>
                 ))}
-              </select>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-500 ml-1">Madre</label>
-              <select
-                value={formData.motherId || ''}
-                onChange={e => setFormData({ ...formData, motherId: e.target.value || undefined })}
-                className="w-full p-3.5 bg-white border border-slate-200 rounded-2xl focus:ring-4 focus:ring-[#5a5a40]/5 focus:border-[#5a5a40] outline-none transition-all text-slate-900 appearance-none cursor-pointer"
-              >
-                <option value="">Nessuno</option>
-                {otherPeople.filter(p => p.gender === 'female').map(p => (
-                  <option key={p.id} value={p.id}>{p.firstName} {p.lastName}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-bold text-slate-500 ml-1 flex items-center gap-2">
-              <Heart className="w-3 h-3 text-rose-400" /> Coniuge / Partner
-            </label>
-            <select
-              value={formData.spouseIds?.[0] || ''}
-              onChange={e => setFormData({ ...formData, spouseIds: e.target.value ? [e.target.value] : [] })}
-              className="w-full p-3.5 bg-white border border-slate-200 rounded-2xl focus:ring-4 focus:ring-[#5a5a40]/5 focus:border-[#5a5a40] outline-none transition-all text-slate-900 appearance-none cursor-pointer"
-            >
-              <option value="">Nessuno</option>
-              {otherPeople.map(p => (
-                <option key={p.id} value={p.id}>{p.firstName} {p.lastName}</option>
-              ))}
-            </select>
+              </div>
+            </Field>
+            <Field label="Foto (URL)" htmlFor="f-photo" error={show('photoUrl')} className="sm:col-span-2" hint="Link diretto a un’immagine (es. da Google Foto, Imgur…).">
+              <input id="f-photo" type="url" className={inputClass} value={form.photoUrl ?? ''} aria-invalid={!!show('photoUrl')} onChange={(e) => set('photoUrl', e.target.value)} placeholder="https://…" />
+            </Field>
           </div>
         </section>
 
-        {/* Biography Section */}
+        {/* Vita */}
         <section className="space-y-4">
           <div className="flex items-center justify-between">
-            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
-              <BookOpen className="w-4 h-4 text-[#5a5a40]" /> Memorie e Note
-            </h4>
-            <div className="flex items-center gap-1 text-[10px] text-slate-400 italic">
-              <Info className="w-3 h-3" />
-              <span>La storia di una vita</span>
-            </div>
+            <h3 className="font-serif text-lg font-semibold text-ink">Vita</h3>
+            <label className="flex items-center gap-2.5 cursor-pointer text-sm text-ink-2">
+              Defunto/a
+              <button
+                type="button"
+                role="switch"
+                aria-checked={deceased}
+                onClick={() => setForm((f) => (isDeceased(f) ? { ...f, deceased: false, deathDate: '', deathPlace: '' } : { ...f, deceased: true }))}
+                className={cn('relative h-6 w-11 rounded-full transition-colors', deceased ? 'bg-brand' : 'bg-line-2')}
+              >
+                <span className={cn('absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all', deceased ? 'left-[22px]' : 'left-0.5')} />
+              </button>
+            </label>
           </div>
-          <textarea
-            rows={4}
-            placeholder="Racconta brevemente la storia di questa persona, i suoi successi, le sue passioni..."
-            value={formData.bio || ''}
-            onChange={e => setFormData({ ...formData, bio: e.target.value })}
-            className="w-full p-5 bg-white border border-slate-200 rounded-[2rem] focus:ring-4 focus:ring-[#5a5a40]/5 focus:border-[#5a5a40] outline-none transition-all serif italic text-lg text-slate-700 leading-relaxed"
-          />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Data di nascita" htmlFor="f-bd" error={show('birthDate')}>
+              <DateInput id="f-bd" value={form.birthDate} invalid={!!show('birthDate')} onChange={(iso) => {
+                setDateErrors((d) => ({ ...d, birthDate: iso === null }));
+                if (iso !== null) set('birthDate', iso);
+              }} />
+            </Field>
+            <Field label="Luogo di nascita" htmlFor="f-bp">
+              <input id="f-bp" className={inputClass} value={form.birthPlace ?? ''} onChange={(e) => set('birthPlace', e.target.value)} placeholder="es. Verona" maxLength={200} />
+            </Field>
+            {deceased && (
+              <>
+                <Field label="Data di morte" htmlFor="f-dd" error={show('deathDate')} hint="Lascia vuoto se non è nota.">
+                  <DateInput id="f-dd" value={form.deathDate} invalid={!!show('deathDate')} onChange={(iso) => {
+                    setDateErrors((d) => ({ ...d, deathDate: iso === null }));
+                    if (iso !== null) set('deathDate', iso);
+                  }} />
+                </Field>
+                <Field label="Luogo di morte" htmlFor="f-dp">
+                  <input id="f-dp" className={inputClass} value={form.deathPlace ?? ''} onChange={(e) => set('deathPlace', e.target.value)} maxLength={200} />
+                </Field>
+              </>
+            )}
+            <Field label="Professione" htmlFor="f-job" className="sm:col-span-2">
+              <input id="f-job" className={inputClass} value={form.occupation ?? ''} onChange={(e) => set('occupation', e.target.value)} placeholder="es. Falegname" maxLength={200} />
+            </Field>
+          </div>
+        </section>
+
+        {/* Legami */}
+        <section className="space-y-4">
+          <h3 className="font-serif text-lg font-semibold text-ink">Legami</h3>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Padre" htmlFor="f-father">
+              <select id="f-father" className={inputClass} value={form.fatherId ?? ''} onChange={(e) => set('fatherId', e.target.value)}>
+                <option value="">— Non indicato —</option>
+                {parentOptions('male').map((p) => (
+                  <option key={p.id} value={p.id}>{optionLabel(p)}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Madre" htmlFor="f-mother">
+              <select id="f-mother" className={inputClass} value={form.motherId ?? ''} onChange={(e) => set('motherId', e.target.value)}>
+                <option value="">— Non indicata —</option>
+                {parentOptions('female').map((p) => (
+                  <option key={p.id} value={p.id}>{optionLabel(p)}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+          {warnings.length > 0 && (
+            <p className="rounded-xl bg-brass/10 text-brass px-3.5 py-2.5 text-xs">{warnings.join(' ')}</p>
+          )}
+
+          <Field label="Coniugi / partner">
+            <div className="space-y-2">
+              {(form.spouseIds ?? []).map((sid) => {
+                const sp = idx.get(sid);
+                if (!sp) return null;
+                return (
+                  <div key={sid} className="flex items-center gap-3 rounded-xl border border-line bg-surface-2 pl-2 pr-1 py-1.5">
+                    <Avatar person={sp} size={30} />
+                    <span className="flex-1 text-sm font-medium text-ink truncate">{fullName(sp)}</span>
+                    <Heart className="h-4 w-4 text-brass" />
+                    <IconButton label={`Rimuovi ${fullName(sp)}`} size="sm" type="button" onClick={() => set('spouseIds', form.spouseIds!.filter((x) => x !== sid))}>
+                      <X className="h-4 w-4" />
+                    </IconButton>
+                  </div>
+                );
+              })}
+              <div className="flex gap-2">
+                <select aria-label="Scegli un coniuge" className={inputClass} value={spouseToAdd} onChange={(e) => setSpouseToAdd(e.target.value)}>
+                  <option value="">Aggiungi coniuge…</option>
+                  {spouseOptions.map((p) => (
+                    <option key={p.id} value={p.id}>{optionLabel(p)}</option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  variant="soft"
+                  className="h-11"
+                  disabled={!spouseToAdd}
+                  onClick={() => {
+                    set('spouseIds', [...(form.spouseIds ?? []), spouseToAdd]);
+                    setSpouseToAdd('');
+                  }}
+                >
+                  <Plus className="h-4 w-4" /> Aggiungi
+                </Button>
+              </div>
+            </div>
+          </Field>
+        </section>
+
+        {/* Biografia */}
+        <section className="space-y-3">
+          <h3 className="font-serif text-lg font-semibold text-ink">Storia e ricordi</h3>
+          <Field label="" error={show('bio')} hint={<span className="tabular-nums">{form.bio?.length ?? 0}/2000</span>}>
+            <textarea
+              aria-label="Biografia"
+              rows={5}
+              className={cn(inputClass, 'h-auto py-3 leading-relaxed resize-y min-h-28')}
+              value={form.bio ?? ''}
+              onChange={(e) => set('bio', e.target.value)}
+              placeholder="Aneddoti, mestieri, viaggi, ricette… la storia che vuoi tramandare."
+            />
+          </Field>
         </section>
       </form>
 
-      {/* Footer Actions */}
-      <div className="px-8 py-6 border-t border-slate-100 bg-white/50 backdrop-blur-sm flex gap-4">
-        {formData.id && onDelete && (
-          <button
-            type="button"
-            onClick={() => {
-              if (window.confirm('Sei sicuro di voler eliminare questo membro?')) {
-                onDelete(formData.id!);
-              }
-            }}
-            className="p-4 text-rose-500 hover:bg-rose-50 rounded-[1.5rem] transition-all border border-rose-100 active:scale-95 group"
-            title="Elimina"
-          >
-            <Trash2 className="w-6 h-6 group-hover:scale-110 transition-transform" />
-          </button>
+      <div className="flex items-center gap-3 border-t border-line px-6 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] bg-surface">
+        {existing && onDelete && (
+          <Button type="button" variant="danger" onClick={() => onDelete(existing)} disabled={saving}>
+            <Trash2 className="h-4 w-4" /> <span className="hidden sm:inline">Elimina</span>
+          </Button>
         )}
-        <button
-          onClick={handleSubmit}
-          className="flex-1 bg-[#5a5a40] hover:bg-[#4a4a30] text-white py-4 rounded-[1.5rem] font-bold flex items-center justify-center gap-3 shadow-xl shadow-[#5a5a40]/20 transition-all active:scale-[0.98] group"
-        >
-          <Save className="w-5 h-5 group-hover:rotate-12 transition-transform" />
-          <span className="text-lg">Salva nella Storia</span>
-        </button>
+        <div className="flex-1" />
+        <Button type="button" variant="ghost" onClick={requestClose} disabled={saving}>
+          Annulla
+        </Button>
+        <Button type="submit" form="person-form" variant="primary" disabled={saving}>
+          {saving && <Spinner />} {form.id ? 'Salva modifiche' : 'Aggiungi'}
+        </Button>
       </div>
-    </div>
+    </Modal>
   );
-};
-
-export default PersonForm;
+}

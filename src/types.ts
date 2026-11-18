@@ -4,9 +4,15 @@ export interface Person {
   id: string;
   firstName: string;
   lastName: string;
-  birthDate?: string;
-  deathDate?: string;
+  nickname?: string;
   gender: Gender;
+  birthDate?: string;
+  birthPlace?: string;
+  deathDate?: string;
+  /** Defunto anche senza data di morte nota. */
+  deceased?: boolean;
+  deathPlace?: string;
+  occupation?: string;
   fatherId?: string;
   motherId?: string;
   spouseIds?: string[];
@@ -14,8 +20,13 @@ export interface Person {
   photoUrl?: string;
 }
 
-export interface UserProfile {
+export type PersonDraft = Partial<Person>;
+
+export interface AppUser {
   uid: string;
   email: string;
-  role: 'admin' | 'user';
+  displayName: string | null;
+  photoURL: string | null;
+  emailVerified: boolean;
+  isAdmin: boolean;
 }

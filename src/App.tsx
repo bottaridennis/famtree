@@ -570,8 +570,6 @@ export default function App() {
                 <span className="flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-male" />Uomo</span>
                 <span className="flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-female" />Donna</span>
                 <span className="flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-other" />Altro</span>
-                <span className="flex items-center gap-1.5"><i className="h-2.5 w-3.5 rounded-[60%_0] bg-[var(--leaf-2)]" />Vivente</span>
-                <span className="flex items-center gap-1.5"><i className="h-2.5 w-3.5 rounded-[60%_0] bg-[var(--autumn-1)]" />In memoria</span>
                 <span className="flex items-center gap-1.5 text-brass">♥ Coppia</span>
                 <span className="hidden items-center gap-1 xl:flex">
                   <Kbd>/</Kbd> cerca <Kbd>0</Kbd> adatta

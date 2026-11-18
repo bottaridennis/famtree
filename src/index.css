@@ -29,24 +29,6 @@
   --grid: rgba(60, 50, 30, 0.07);
   --shadow: 0 1px 2px rgba(40, 32, 18, 0.06), 0 8px 24px -8px rgba(40, 32, 18, 0.16);
   --shadow-lg: 0 24px 64px -16px rgba(30, 24, 12, 0.32);
-  --sky-1: #e7efe6;
-  --sky-2: #f6f2e9;
-  --bark: #8b6a4b;
-  --bark-edge: #5f4630;
-  --bark-light: #a88765;
-  --leaf-1: #6a9a52;
-  --leaf-2: #7fae5f;
-  --leaf-3: #4f8044;
-  --leaf-4: #93b866;
-  --leaf-vein: rgba(255, 255, 240, 0.45);
-  --autumn-1: #c98d3f;
-  --autumn-2: #b8693a;
-  --autumn-3: #d9a84f;
-  --autumn-4: #a35a33;
-  --canopy: #8fb878;
-  --canopy-autumn: #d6b277;
-  --grass-1: #a9c48a;
-  --grass-2: #d9e3c4;
   color-scheme: light;
 }
 
@@ -76,24 +58,6 @@
   --grid: rgba(255, 245, 220, 0.05);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -8px rgba(0, 0, 0, 0.5);
   --shadow-lg: 0 24px 64px -16px rgba(0, 0, 0, 0.7);
-  --sky-1: #121a1f;
-  --sky-2: #14130f;
-  --bark: #6e5440;
-  --bark-edge: #3f2f22;
-  --bark-light: #8a6c52;
-  --leaf-1: #4e7a40;
-  --leaf-2: #5f8c4a;
-  --leaf-3: #3d6634;
-  --leaf-4: #6f9a52;
-  --leaf-vein: rgba(255, 255, 240, 0.25);
-  --autumn-1: #a87332;
-  --autumn-2: #95552e;
-  --autumn-3: #b98c3f;
-  --autumn-4: #84482a;
-  --canopy: #2f4a2a;
-  --canopy-autumn: #4a3a22;
-  --grass-1: #34452c;
-  --grass-2: #1d2419;
   color-scheme: dark;
 }
 
@@ -145,7 +109,8 @@ body {
 
 .canvas-grid {
   background-color: var(--paper);
-  background-image: radial-gradient(ellipse 120% 90% at 50% 0%, var(--sky-1), var(--sky-2) 70%);
+  background-image: radial-gradient(var(--grid) 1.2px, transparent 1.2px);
+  background-size: 22px 22px;
 }
 
 .scrollbar-thin {
@@ -175,91 +140,11 @@ input[type='date']::-webkit-calendar-picker-indicator {
   }
 }
 
-/* --- Albero ------------------------------------------------------------------------- */
-@keyframes branch-grow {
-  from {
-    stroke-dashoffset: 1;
-  }
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-@keyframes node-pop {
-  from {
-    opacity: 0;
-    transform: scale(0.2);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-.family-tree .branch {
-  stroke-dasharray: 1;
-  animation: branch-grow 0.9s cubic-bezier(0.3, 0.7, 0.3, 1) both;
-  transition: d 0.6s ease, opacity 0.25s;
-}
-.family-tree .node-pop {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: node-pop 0.5s cubic-bezier(0.3, 1.4, 0.5, 1) both;
-}
-.family-tree .tree-node {
-  transition: transform 0.6s ease, opacity 0.25s;
-}
-.family-tree[data-lod='far'] .tree-label {
-  display: none;
-}
-.tree-node:hover .tree-medal,
-.tree-node:focus-visible .tree-medal {
-  stroke-width: 4 !important;
-}
-
 .tree-node .tree-card {
   transition: stroke 0.15s, filter 0.2s;
   filter: drop-shadow(0 1px 1.5px rgba(40, 32, 18, 0.08)) drop-shadow(0 4px 10px rgba(40, 32, 18, 0.06));
 }
-.dark /* --- Albero ------------------------------------------------------------------------- */
-@keyframes branch-grow {
-  from {
-    stroke-dashoffset: 1;
-  }
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-@keyframes node-pop {
-  from {
-    opacity: 0;
-    transform: scale(0.2);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-.family-tree .branch {
-  stroke-dasharray: 1;
-  animation: branch-grow 0.9s cubic-bezier(0.3, 0.7, 0.3, 1) both;
-  transition: d 0.6s ease, opacity 0.25s;
-}
-.family-tree .node-pop {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: node-pop 0.5s cubic-bezier(0.3, 1.4, 0.5, 1) both;
-}
-.family-tree .tree-node {
-  transition: transform 0.6s ease, opacity 0.25s;
-}
-.family-tree[data-lod='far'] .tree-label {
-  display: none;
-}
-.tree-node:hover .tree-medal,
-.tree-node:focus-visible .tree-medal {
-  stroke-width: 4 !important;
-}
-
-.tree-node .tree-card {
+.dark .tree-node .tree-card {
   filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
 }
 .tree-node:hover .tree-card,

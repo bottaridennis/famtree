@@ -5,12 +5,9 @@ Albero genealogico interattivo (React + Firebase), pubblicato su GitHub Pages:
 
 ## Funzionalità
 
-- **Un albero vero**: i capostipiti stanno sul tronco, i discendenti salgono sui rami. Lo spessore dei
-  rami cresce con il numero di discendenti, la chioma si allarga a ogni generazione; foglie verdi per i
-  viventi e autunnali per chi non c’è più. L’albero “cresce” con un’animazione quando si apre o si
-  aggiungono persone.
-- Layout automatico: coppie affiancate unite da un cuore, figli sopra i genitori, ordinamento che
-  riduce gli incroci.
+- **Albero a generazioni** con layout automatico: coppie affiancate, figli centrati sotto i genitori,
+  ordinamento che riduce gli incroci; ogni famiglia ha la sua corsia di collegamento, così le linee
+  di famiglie diverse non si sovrappongono.
 - Zoom/pan con mouse, trackpad e touch; pulsanti *ingrandisci / riduci / adatta*.
 - **Scheda persona**: date e luoghi di nascita e morte, età, professione, soprannome, biografia,
   genitori, coniugi, figli, fratelli (cliccabili per navigare).

@@ -263,6 +263,43 @@ export function computeLayout(people: Person[]): TreeLayout {
       place(rows[g], rows[g].map(desiredFromChildren));
     }
   }
+  // Ordine finale, dall'alto verso il basso: i fratelli (stessa coppia di genitori) restano
+  // sempre vicini e i gruppi di fratelli seguono l'ordine dei rispettivi genitori. Così la linea
+  // orizzontale di una famiglia non scavalca mai i figli di un'altra famiglia.
+  const parentCenter = (m: string) => {
+    const ps = parents.get(m)!;
+    return ps.length ? ps.reduce((acc, pid) => acc + memberCenter(pid), 0) / ps.length : null;
+  };
+  for (let g = 1; g <= maxGen; g++) {
+    // Coppia in cui entrambi hanno i genitori nell'albero: ognuno dal lato della propria famiglia.
+    rows[g].forEach((u) => {
+      if (u.members.length !== 2) return;
+      const [a, b] = u.members.map(parentCenter);
+      if (a !== null && b !== null && a > b) u.members.reverse();
+    });
+    const groups = new Map<string, { value: number; units: Unit[] }>();
+    rows[g].forEach((u) => {
+      const blood = u.members.find((m) => parents.get(m)!.length);
+      let key: string;
+      let value: number;
+      if (blood) {
+        const ps = parents.get(blood)!;
+        key = [...ps].sort().join('+');
+        value = ps.reduce((acc, pid) => acc + memberCenter(pid), 0) / ps.length;
+      } else {
+        key = `solo-${u.id}`;
+        value = center(u);
+      }
+      if (!groups.has(key)) groups.set(key, { value, units: [] });
+      groups.get(key)!.units.push(u);
+    });
+    const ordered = [...groups.values()]
+      .map((grp) => ({ ...grp, units: grp.units.sort((a, b) => a.x - b.x) }))
+      .sort((a, b) => a.value - b.value || a.units[0].x - b.units[0].x);
+    rows[g].splice(0, rows[g].length, ...ordered.flatMap((grp) => grp.units));
+    place(rows[g], rows[g].map(desiredFromParents));
+  }
+
   // Rifinitura: compromesso tra genitori e figli, terminando dall'alto verso il basso.
   const combined = (u: Unit) => {
     const a = desiredFromParents(u);
@@ -274,6 +311,12 @@ export function computeLayout(people: Person[]): TreeLayout {
   for (let it = 0; it < 4; it++) {
     for (let g = maxGen; g >= 0; g--) place(rows[g], rows[g].map(combined));
     for (let g = 0; g <= maxGen; g++) place(rows[g], rows[g].map(desiredFromParents));
+  }
+  // Ultimo passaggio dal basso verso l'alto: ogni coppia si centra sopra i propri figli, così la
+  // linea orizzontale di una famiglia non scavalca i figli delle famiglie vicine.
+  const parentsOverChildren = (u: Unit) => desiredFromChildren(u) ?? desiredFromParents(u);
+  for (let it = 0; it < 3; it++) {
+    for (let g = maxGen - 1; g >= 0; g--) place(rows[g], rows[g].map(parentsOverChildren));
   }
 
   // --- 5. Nodi -----------------------------------------------------------------------------
@@ -369,25 +412,50 @@ export function computeLayout(people: Person[]): TreeLayout {
     fam.x2 = Math.max(fam.x2, cx(nc));
   });
 
-  // Assegnazione delle corsie per ogni fascia tra due generazioni (interval scheduling).
+  // Assegnazione delle corsie per ogni fascia tra due generazioni. Le famiglie le cui linee
+  // orizzontali si sovrappongono formano un gruppo; dentro il gruppo ognuna ha la sua corsia,
+  // in un ordine (sopra/sotto) scelto per ridurre al minimo gli incroci.
   const LANE_MARGIN = 14;
   const byRow = new Map<number, Family[]>();
   families.forEach((f) => byRow.set(f.rowTop, [...(byRow.get(f.rowTop) ?? []), f]));
   const laneCount = new Map<number, number>();
+  const inside = (x: number, f: Family) => x > f.x1 + 1 && x < f.x2 - 1;
+  /** Incroci se `a` sta sopra `b`: la discesa dai genitori di b taglia la linea di a, e i figli di a tagliano la linea di b. */
+  const costAbove = (a: Family, b: Family) =>
+    (inside(b.sx, a) ? 1 : 0) + a.kids.filter((k) => inside(cx(k), b)).length;
   byRow.forEach((list, rowTop) => {
-    const ends: number[] = [];
-    [...list]
-      .sort((a, b) => a.x1 - b.x1 || a.x2 - b.x2)
-      .forEach((f) => {
-        if (f.x2 - f.x1 < 1) return; // solo tratto verticale: nessuna corsia necessaria
-        let lane = ends.findIndex((end) => end + LANE_MARGIN < f.x1);
-        if (lane === -1) {
-          lane = ends.length;
-          ends.push(f.x2);
-        } else ends[lane] = f.x2;
-        f.lane = lane;
+    const withBus = list.filter((f) => f.x2 - f.x1 >= 1).sort((a, b) => a.x1 - b.x1);
+    let maxLanes = 1;
+    let cluster: Family[] = [];
+    let clusterEnd = -Infinity;
+    const flush = () => {
+      if (!cluster.length) return;
+      const ordered: Family[] = [];
+      cluster.forEach((f) => {
+        // Inserimento nella posizione con meno incroci rispetto alle famiglie già ordinate.
+        let best = 0;
+        let bestCost = Infinity;
+        for (let i = 0; i <= ordered.length; i++) {
+          let c = 0;
+          ordered.forEach((o, j) => (c += j < i ? costAbove(o, f) : costAbove(f, o)));
+          if (c < bestCost) {
+            bestCost = c;
+            best = i;
+          }
+        }
+        ordered.splice(best, 0, f);
       });
-    laneCount.set(rowTop, Math.max(1, ends.length));
+      ordered.forEach((f, i) => (f.lane = i));
+      maxLanes = Math.max(maxLanes, ordered.length);
+      cluster = [];
+    };
+    withBus.forEach((f) => {
+      if (f.x1 > clusterEnd + LANE_MARGIN) flush();
+      cluster.push(f);
+      clusterEnd = Math.max(clusterEnd, f.x2);
+    });
+    flush();
+    laneCount.set(rowTop, maxLanes);
   });
 
   families.forEach((f) => {
